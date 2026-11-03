@@ -1,0 +1,15 @@
+services:
+  admin-financeiro-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: admin-financeiro-app
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    ports:
+      - "3001:3001"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - /home/helio/uploads:/app/backend/uploads

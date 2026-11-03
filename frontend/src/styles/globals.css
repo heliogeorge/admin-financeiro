@@ -1,0 +1,84 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================ */
+/* Custom base styles                           */
+/* ============================================ */
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+
+  body {
+    @apply font-sans text-gray-800 bg-gray-50;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  /* Scrollbar customizada */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-gray-300 rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-gray-400;
+  }
+}
+
+@layer components {
+  /* Cards */
+  .card {
+    @apply bg-white rounded-xl border border-gray-200/80 shadow-sm;
+  }
+
+  /* Status badges */
+  .badge-pendente {
+    @apply bg-amber-50 text-amber-700 border border-amber-200;
+  }
+  .badge-pago {
+    @apply bg-emerald-50 text-emerald-700 border border-emerald-200;
+  }
+  .badge-vencido {
+    @apply bg-red-50 text-red-700 border border-red-200;
+  }
+  .badge-cancelado {
+    @apply bg-gray-50 text-gray-500 border border-gray-200;
+  }
+
+  /* Table */
+  .table-header {
+    @apply text-xs font-semibold text-gray-500 uppercase tracking-wider;
+  }
+
+  /* Inputs */
+  .input-field {
+    @apply w-full px-3 py-2 rounded-lg border border-gray-300 bg-white
+           text-sm text-gray-900 placeholder:text-gray-400
+           focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500
+           transition-colors;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2
+           bg-brand-600 text-white text-sm font-medium rounded-lg
+           hover:bg-brand-700 active:bg-brand-800
+           focus:outline-none focus:ring-2 focus:ring-brand-500/30
+           transition-all disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2
+           bg-white text-gray-700 text-sm font-medium rounded-lg
+           border border-gray-300 hover:bg-gray-50 active:bg-gray-100
+           focus:outline-none focus:ring-2 focus:ring-gray-500/20
+           transition-all;
+  }
+}
