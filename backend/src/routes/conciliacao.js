@@ -363,21 +363,55 @@ router.get('/extrato-conta/:contaId', async (req, res, next) => {
     let rows;
     let netAte; // função que soma net no intervalo (a, b] por data
     if (isMp) {
-      rows = await adminDb('mp_movimentos')
-        .where('conta_bancaria_id', conta.id)
-        .where('transaction_date', '>=', `${inicio} 00:00:00`)
-        .where('transaction_date', '<=', `${fim} 23:59:59`)
-        .orderBy('transaction_date', 'asc').orderBy('id', 'asc')
-        .select('transaction_date as data', 'descricao', 'net_amount', 'transaction_type', 'source_id');
-      rows = rows.map((r) => ({
-        data: r.data,
-        descricao: r.descricao || r.transaction_type,
-        tipo: parseFloat(r.net_amount) >= 0 ? 'credito' : 'debito',
-        valor: Math.abs(parseFloat(r.net_amount)),
-        net: parseFloat(r.net_amount),
-        status: null,
-        documento: r.source_id,
-      }));
+      // O relatório raramente traz descrição; quando o movimento é um payment
+      // que também está em extratos_bancarios (fit_id = mp-<source_id>), usa a
+      // descrição amigável montada na conciliação.
+      const MP_TIPOS = {
+        SETTLEMENT: 'Liquidação',
+        PAYOUTS: 'Saque / transferência',
+        WITHDRAWAL: 'Saque',
+        WITHDRAWAL_CANCEL: 'Saque cancelado',
+        REFUND: 'Estorno',
+        CHARGEBACK: 'Chargeback',
+        DISPUTE: 'Disputa',
+        CASHBACK: 'Cashback',
+        SETTLEMENT_SHIPPING: 'Frete',
+        REFUND_SHIPPING: 'Estorno de frete',
+        CHARGEBACK_SHIPPING: 'Chargeback de frete',
+        DISPUTE_SHIPPING: 'Disputa de frete',
+        TRAVA_DE_RECEBIVEL: 'Trava de recebível',
+      };
+
+      rows = await adminDb('mp_movimentos as m')
+        .leftJoin('extratos_bancarios as e', function joinExtrato() {
+          this.on('e.conta_bancaria_id', '=', 'm.conta_bancaria_id')
+            .andOn('e.fit_id', '=', adminDb.raw("CONCAT('mp-', m.source_id)"));
+        })
+        .where('m.conta_bancaria_id', conta.id)
+        .where('m.transaction_date', '>=', `${inicio} 00:00:00`)
+        .where('m.transaction_date', '<=', `${fim} 23:59:59`)
+        .orderBy('m.transaction_date', 'asc').orderBy('m.id', 'asc')
+        .select(
+          'm.transaction_date as data', 'm.descricao', 'm.net_amount',
+          'm.transaction_type', 'm.payment_method', 'm.source_id',
+          'e.descricao as descricao_conciliacao', 'e.status as status_conciliacao'
+        );
+      rows = rows.map((r) => {
+        const net = parseFloat(r.net_amount);
+        let tipoLabel = MP_TIPOS[r.transaction_type] || r.transaction_type;
+        if (r.transaction_type === 'SETTLEMENT') tipoLabel = net >= 0 ? 'Recebimento' : 'Pagamento';
+        const metodo = r.payment_method && r.payment_method !== 'available_money'
+          ? ` (${r.payment_method})` : '';
+        return {
+          data: r.data,
+          descricao: r.descricao_conciliacao || r.descricao || `${tipoLabel}${metodo}`,
+          tipo: parseFloat(r.net_amount) >= 0 ? 'credito' : 'debito',
+          valor: Math.abs(parseFloat(r.net_amount)),
+          net: parseFloat(r.net_amount),
+          status: r.status_conciliacao || null,
+          documento: r.source_id,
+        };
+      });
       netAte = async (aExclusive, bInclusive) => {
         const q = adminDb('mp_movimentos').where('conta_bancaria_id', conta.id);
         if (aExclusive) q.where('transaction_date', '>', `${aExclusive} 23:59:59`);
