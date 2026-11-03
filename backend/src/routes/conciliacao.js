@@ -91,17 +91,28 @@ router.post('/ofx/:contaBancariaId', authMiddleware, upload.single('arquivo'), a
     const conta = await adminDb(BANCOS).where('id', contaBancariaId).first();
     if (!conta) return res.status(404).json({ error: 'Conta bancária não encontrada' });
 
-    const texto = req.file.buffer.toString('latin1'); // OFX costuma vir em ISO-8859-1
+    // Encoding: bancos declaram qualquer coisa no cabeçalho; na prática o
+    // Itaú manda UTF-8. Tenta UTF-8 e cai para latin1 se houver byte inválido.
+    let texto = req.file.buffer.toString('utf8');
+    if (texto.includes('�')) texto = req.file.buffer.toString('latin1');
+
     const { conta: contaOfx, saldo, transactions } = parseOfx(texto);
 
     const erroConta = validarContaOfx(contaOfx, conta);
     if (erroConta) return res.status(400).json({ error: erroConta });
 
+    // Linhas de saldo que o Itaú embute como transação ("SALDO ANTERIOR",
+    // "SALDO TOTAL DISPONÍVEL DIA") não são movimentação.
+    const isLinhaSaldo = (desc) => /^\W*SALDO\b/i.test(String(desc || '').trim())
+      || /S\s+A\s+L\s+D\s+O/i.test(String(desc || ''));
+
     let inserted = 0;
     let duplicated = 0;
+    let ignorados = 0;
 
     for (const tx of transactions) {
       if (!tx.data || !tx.valor) continue;
+      if (isLinhaSaldo(tx.descricao)) { ignorados++; continue; }
 
       const existe = await adminDb(EXTRATOS)
         .where('conta_bancaria_id', contaBancariaId)
@@ -136,9 +147,11 @@ router.post('/ofx/:contaBancariaId', authMiddleware, upload.single('arquivo'), a
     }
 
     res.status(201).json({
-      message: `${inserted} lançamentos importados`,
+      message: `${inserted} lançamentos importados`
+        + (ignorados ? ` (${ignorados} linhas de saldo ignoradas)` : ''),
       inserted,
       duplicated,
+      ignorados,
       total: transactions.length,
       saldo_extrato: saldoAtualizado ? saldo.valor : null,
       data_saldo_extrato: saldoAtualizado ? saldo.data : null,
