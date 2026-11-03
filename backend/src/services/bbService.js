@@ -13,10 +13,11 @@
  *   BB_CERT_PFX / BB_CERT_SENHA   certificado de cliente p/ mTLS (ex.: e-CNPJ
  *                                 A1 .pfx), exigido pelo host de extratos
  *   (alternativa em PEM: BB_CERT_CRT + BB_CERT_KEY)
+ *   BB_MCI_TESTE   header x-br-com-bb-ipa-mciteste (massa de teste, só hm)
  *
- * O host de extratos exige mTLS (handshake recusa sem certificado de
- * cliente); em homologação a cadeia do servidor é da AC própria do BB
- * (certs/bb-hom-ca.pem). O OAuth não exige mTLS.
+ * O host de extratos exige mTLS: o certificado de cliente deve ser o mesmo
+ * registrado no Portal Developers (com EKU Client Authentication). O OAuth
+ * não exige mTLS.
  *
  * Obs: a API não fornece um id único por lançamento; o fit_id é um hash
  * estável dos campos do lançamento (com sequencial para linhas idênticas
@@ -25,7 +26,6 @@
 const crypto = require('crypto');
 const https = require('https');
 const fs = require('fs');
-const path = require('path');
 const { adminDb } = require('../config/database');
 
 const EXTRATOS = 'extratos_bancarios';
@@ -33,19 +33,18 @@ const BANCOS = 'contas_bancarias';
 
 const BB_BANCO_CODIGO = '001';
 
+// API Extratos v2 (a v1 será desativada em 20/11/2026). Os hosts mTLS usam
+// certificado de servidor DigiCert (CA pública), então não precisam de CA
+// customizada; a autenticação do cliente é pelo certificado registrado no
+// Portal Developers. O app key vai em query gw-dev-app-key nos dois ambientes.
 const AMBIENTES = {
   hm: {
     oauth: 'https://oauth.hm.bb.com.br',
-    api: 'https://api-extratos.hm.bb.com.br',
-    keyParam: 'gw-dev-app-key',
-    // Cadeia da AC própria do BB para homologação
-    caFile: path.join(__dirname, '../../certs/bb-hom-ca.pem'),
+    api: 'https://extratos.mtls.api.hm.bb.com.br',
   },
   prod: {
     oauth: 'https://oauth.bb.com.br',
-    api: 'https://api-extratos.bb.com.br',
-    keyParam: 'gw-app-key',
-    caFile: null,
+    api: 'https://extratos.mtls.api.bb.com.br',
   },
 };
 
@@ -67,6 +66,7 @@ function getConfig() {
     appKey,
     agencia,
     conta,
+    mciTeste: process.env.BB_MCI_TESTE || null,
     certPfx: process.env.BB_CERT_PFX || null,
     certSenha: process.env.BB_CERT_SENHA || null,
     certCrt: process.env.BB_CERT_CRT || null,
@@ -83,18 +83,11 @@ function hasClientCert(cfg) {
 }
 
 /**
- * Opções TLS do host de extratos: CA do BB (homologação) + certificado de
- * cliente (mTLS). Lança erro claro se o certificado não estiver configurado.
+ * Opções TLS do host de extratos: certificado de cliente (mTLS).
+ * Lança erro claro se o certificado não estiver configurado.
  */
 function buildTlsOptions(cfg) {
   const tls = {};
-  if (cfg.caFile) {
-    try {
-      tls.ca = fs.readFileSync(cfg.caFile);
-    } catch {
-      throw new Error(`Cadeia de CA do BB não encontrada em ${cfg.caFile}.`);
-    }
-  }
   if (cfg.certPfx) {
     try {
       tls.pfx = fs.readFileSync(cfg.certPfx);
@@ -130,6 +123,9 @@ function httpsGet(urlStr, headers, tls) {
       method: 'GET',
       headers,
       timeout: 30000,
+      // Doc do BB: endpoints aceitam somente TLS 1.2
+      minVersion: 'TLSv1.2',
+      maxVersion: 'TLSv1.2',
       ...tls,
     }, (res) => {
       let data = '';
@@ -180,8 +176,11 @@ function parseDataLancamento(v) {
   return `${s.slice(4, 8)}-${s.slice(2, 4)}-${s.slice(0, 2)}`;
 }
 
+const stripZeros = (v) => String(v).replace(/^0+/, '') || '0';
+
 /**
- * Busca os lançamentos do período (paginado).
+ * Busca os lançamentos do período (paginado, janelas de até 31 dias —
+ * limite da API v2; HTTP 404 = sem lançamentos no período).
  */
 async function fetchLancamentos(cfg, dias) {
   if (!cfg.agencia || !cfg.conta) {
@@ -189,51 +188,67 @@ async function fetchLancamentos(cfg, dias) {
   }
   const token = await getToken(cfg);
   const tls = buildTlsOptions(cfg);
-  const fim = new Date();
-  const inicio = new Date(fim.getTime() - dias * 86400000);
 
-  const basePath = `${cfg.api}/extratos/v1/conta-corrente/agencia/${encodeURIComponent(cfg.agencia)}/conta/${encodeURIComponent(cfg.conta)}`;
+  const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+  if (cfg.ambiente === 'hm' && cfg.mciTeste) {
+    headers['x-br-com-bb-ipa-mciteste'] = cfg.mciTeste;
+  }
+
+  const basePath = `${cfg.api}/v2/conta-corrente/agencia/${stripZeros(cfg.agencia)}/conta/${stripZeros(cfg.conta)}`;
   const all = [];
-  let pagina = 1;
 
-  while (pagina && pagina < 100) {
-    const qs = new URLSearchParams({
-      [cfg.keyParam]: cfg.appKey,
-      dataInicioSolicitacao: String(toDataSolicitacao(inicio)),
-      dataFimSolicitacao: String(toDataSolicitacao(fim)),
-      numeroPaginaSolicitacao: String(pagina),
-      quantidadeRegistroPaginaSolicitacao: '200',
-    });
-    const res = await httpsGet(`${basePath}?${qs}`, { Authorization: `Bearer ${token}` }, tls);
-    const text = res.text;
-    let body;
-    try { body = JSON.parse(text); } catch { body = {}; }
-    if (res.status < 200 || res.status >= 300) {
-      const msg = body.message
-        || (body.errors && body.errors[0] && (body.errors[0].mensagem || body.errors[0].message))
-        || `HTTP ${res.status}`;
-      const err = new Error(`BB Extratos: ${msg}`);
-      err.status = res.status;
-      throw err;
+  // janelas de no máximo 31 dias, da mais antiga para a mais recente
+  const fimTotal = new Date();
+  let inicio = new Date(fimTotal.getTime() - dias * 86400000);
+
+  while (inicio < fimTotal) {
+    const fim = new Date(Math.min(inicio.getTime() + 30 * 86400000, fimTotal.getTime()));
+
+    let pagina = 1;
+    while (pagina && pagina < 200) {
+      const qs = new URLSearchParams({
+        'gw-dev-app-key': cfg.appKey,
+        dataInicioSolicitacao: String(toDataSolicitacao(inicio)),
+        dataFimSolicitacao: String(toDataSolicitacao(fim)),
+        numeroPaginaSolicitacao: String(pagina),
+        quantidadeRegistroPaginaSolicitacao: '120',
+      });
+      const res = await httpsGet(`${basePath}?${qs}`, headers, tls);
+      let body;
+      try { body = JSON.parse(res.text); } catch { body = {}; }
+
+      if (res.status === 404) break; // sem lançamentos nesta janela
+
+      if (res.status < 200 || res.status >= 300) {
+        const msg = body.message
+          || (body.errors && body.errors[0]
+            && (body.errors[0].message || body.errors[0].mensagem || body.errors[0].title))
+          || `HTTP ${res.status}`;
+        const err = new Error(`BB Extratos: ${msg}`);
+        err.status = res.status;
+        throw err;
+      }
+
+      const lancamentos = body.listaLancamento || [];
+      all.push(...lancamentos);
+
+      const proxima = parseInt(body.numeroPaginaProximo, 10) || 0;
+      pagina = proxima > pagina ? proxima : 0;
+      if (lancamentos.length === 0) break;
     }
 
-    const lancamentos = body.listaLancamento || body.lancamentos || [];
-    all.push(...lancamentos);
-
-    const proxima = parseInt(body.numeroPaginaProximo, 10) || 0;
-    pagina = proxima > pagina ? proxima : 0;
-    if (lancamentos.length === 0) break;
+    inicio = new Date(fim.getTime() + 86400000);
   }
   return all;
 }
 
 /**
- * Converte um lançamento em linha de extrato. Retorna null para linhas de
- * saldo (não são movimentação).
+ * Converte um lançamento v2 em linha de extrato. Só entram lançamentos
+ * contabilizados (indicadorTipoLancamento = 1); saldos, limites e futuros
+ * (SA, SD, LD, LC, LU, 2, 3, ...) não são movimentação.
  */
 function lancamentoToExtrato(l) {
-  const descricao = (l.textoDescricaoHistorico || '').trim();
-  if (/\bsaldo\b|S A L D O/i.test(descricao)) return null;
+  if (String(l.indicadorTipoLancamento) !== '1') return null;
 
   const valor = Math.abs(parseFloat(l.valorLancamento) || 0);
   if (!valor) return null;
@@ -244,6 +259,7 @@ function lancamentoToExtrato(l) {
   const sinal = String(l.indicadorSinalLancamento || '').toUpperCase();
   if (sinal !== 'C' && sinal !== 'D') return null;
 
+  const descricao = (l.textoDescricaoSubHistorico || l.textoDescricaoHistorico || '').trim();
   const complemento = (l.textoInformacaoComplementar || '').trim();
   const partes = [descricao || 'Lançamento BB'];
   if (complemento) partes.push(complemento);
@@ -256,7 +272,7 @@ function lancamentoToExtrato(l) {
     documento: l.numeroDocumento ? String(l.numeroDocumento) : null,
     hashBase: [
       l.dataLancamento, l.valorLancamento, sinal, l.numeroDocumento,
-      l.codigoHistorico, l.numeroLote, descricao,
+      l.codigoHistorico, l.CodigoSubHistorico, l.numeroLote, descricao,
     ].join('|'),
   };
 }

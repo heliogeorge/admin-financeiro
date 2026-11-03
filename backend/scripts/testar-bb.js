@@ -10,16 +10,15 @@
  */
 const https = require('https');
 const fs = require('fs');
-const path = require('path');
 
 const AMB = (process.env.BB_AMBIENTE || 'prod').toLowerCase();
 const HOSTS = {
-  hm: { oauth: 'https://oauth.hm.bb.com.br', api: 'https://api-extratos.hm.bb.com.br', keyParam: 'gw-dev-app-key' },
-  prod: { oauth: 'https://oauth.bb.com.br', api: 'https://api-extratos.bb.com.br', keyParam: 'gw-app-key' },
+  hm: { oauth: 'https://oauth.hm.bb.com.br', api: 'https://extratos.mtls.api.hm.bb.com.br' },
+  prod: { oauth: 'https://oauth.bb.com.br', api: 'https://extratos.mtls.api.bb.com.br' },
 };
 const env = HOSTS[AMB];
-const agencia = process.env.BB_AGENCIA || '452';
-const conta = process.env.BB_CONTA || '123873';
+const agencia = process.env.BB_AGENCIA || '1505';
+const conta = process.env.BB_CONTA || '1348';
 
 (async () => {
   console.log(`Ambiente: ${AMB} | agência ${agencia} conta ${conta}`);
@@ -40,9 +39,8 @@ const conta = process.env.BB_CONTA || '123873';
   }
   console.log(`1) Token: ok (scope ${tok.scope})`);
 
-  // 2. extrato com mTLS
-  const certsDir = path.join(__dirname, '../certs');
-  const tls = { ca: fs.readFileSync(path.join(certsDir, 'bb-hom-ca.pem')) };
+  // 2. extrato com mTLS (API v2)
+  const tls = {};
   if (process.env.BB_CERT_PFX) {
     tls.pfx = fs.readFileSync(process.env.BB_CERT_PFX);
     if (process.env.BB_CERT_SENHA) tls.passphrase = process.env.BB_CERT_SENHA;
@@ -54,16 +52,22 @@ const conta = process.env.BB_CONTA || '123873';
     process.exit(1);
   }
 
-  const u = new URL(`${env.api}/extratos/v1/conta-corrente/agencia/${agencia}/conta/${conta}`);
-  u.searchParams.set(env.keyParam, process.env.BB_APP_KEY);
-  u.searchParams.set('quantidadeRegistroPaginaSolicitacao', '50');
+  const u = new URL(`${env.api}/v2/conta-corrente/agencia/${agencia}/conta/${conta}`);
+  u.searchParams.set('gw-dev-app-key', process.env.BB_APP_KEY);
+  u.searchParams.set('quantidadeRegistroPaginaSolicitacao', '120');
+
+  const headers = { Authorization: `Bearer ${tok.access_token}`, 'Content-Type': 'application/json' };
+  if (AMB === 'hm' && process.env.BB_MCI_TESTE) headers['x-br-com-bb-ipa-mciteste'] = process.env.BB_MCI_TESTE;
 
   const req = https.request({
     hostname: u.hostname,
     path: u.pathname + u.search,
     method: 'GET',
-    headers: { Authorization: `Bearer ${tok.access_token}` },
+    headers,
     timeout: 30000,
+    // Doc do BB: endpoints aceitam somente TLS 1.2
+    minVersion: 'TLSv1.2',
+    maxVersion: 'TLSv1.2',
     ...tls,
   }, (res) => {
     let d = '';
