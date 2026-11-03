@@ -818,9 +818,16 @@ function ConciliacaoTab() {
     setSyncingMp(true);
     try {
       const res = await mpApi.sync({ dias: 60 });
-      const { resultados = [], erros = [], auto } = res.data;
+      const { resultados = [], erros = [], auto, relatorios_dia: relatoriosDia } = res.data;
       for (const r of resultados) {
         toast.success(`${r.label}: ${r.inserted} novos (${r.duplicated} já existiam)`, { duration: 6000 });
+      }
+      for (const r of Object.values(relatoriosDia || {})) {
+        if (r.importado) {
+          toast.success(`${r.label}: extrato do dia atualizado (${r.movimentos_inseridos} movimentos novos)`, { duration: 7000, icon: '📄' });
+        } else if (r.solicitado) {
+          toast(`${r.label}: relatório do dia ainda em geração no MP — sincronize de novo em ~1 min para importá-lo`, { duration: 9000, icon: '⏳' });
+        }
       }
       for (const e of erros) {
         toast.error(`${e.label}: ${e.error}`, { duration: 8000 });

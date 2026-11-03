@@ -398,6 +398,49 @@ async function gerarRelatorioBackfill(slug, dias = 60) {
   });
 }
 
+const sleep = (ms) => new Promise((r) => { setTimeout(r, ms); });
+
+/**
+ * Atualização sob demanda do extrato MP: pede um relatório dos últimos 2 dias
+ * para cada empresa (a geração no MP leva ~30-60s), aguarda e importa. O
+ * dedupe por hash absorve a sobreposição com os relatórios diários. Quando a
+ * geração não fica pronta dentro do timeout, devolve importado=false — o
+ * próximo sync importa o arquivo que ficou pronto.
+ */
+async function refreshRelatoriosDia({ username = null, timeoutMs = 75000 } = {}) {
+  const empresas = getEmpresas();
+  const resultados = {};
+
+  for (const emp of empresas) {
+    try {
+      await gerarRelatorioBackfill(emp.slug, 2);
+      resultados[emp.slug] = { label: emp.label, solicitado: true, importado: false };
+    } catch (err) {
+      resultados[emp.slug] = { label: emp.label, solicitado: false, importado: false, error: err.message };
+    }
+  }
+
+  const pendentes = new Set(Object.keys(resultados).filter((s) => resultados[s].solicitado));
+  const fim = Date.now() + timeoutMs;
+
+  while (pendentes.size > 0 && Date.now() < fim) {
+    await sleep(6000);
+    for (const slug of [...pendentes]) {
+      try {
+        const r = await syncRelatoriosEmpresa(slug, { username });
+        if (r.arquivos_novos > 0) {
+          resultados[slug] = { ...resultados[slug], ...r, importado: true };
+          pendentes.delete(slug);
+        }
+      } catch (err) {
+        // geração ainda em andamento ou erro transitório — tenta no próximo ciclo
+      }
+    }
+  }
+
+  return resultados;
+}
+
 /**
  * Saldo da conta MP a partir dos movimentos do relatório:
  * saldo_inicial + soma dos net_amount com data posterior a data_saldo_inicial
@@ -568,6 +611,7 @@ module.exports = {
   autoConciliarMp,
   syncRelatoriosEmpresa,
   gerarRelatorioBackfill,
+  refreshRelatoriosDia,
   getSaldoContaMp,
   MP_BANCO_CODIGO,
 };

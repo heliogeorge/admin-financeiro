@@ -158,7 +158,8 @@ export const conciliacaoApi = {
 
 export const mpApi = {
   contas: () => api.get('/mp/contas'),
-  sync: (data) => api.post('/mp/sync', data || {}),
+  // o sync aguarda a geração do relatório do dia no MP (~1-2 min)
+  sync: (data) => api.post('/mp/sync', data || {}, { timeout: 180000 }),
 };
 
 export const bbApi = {

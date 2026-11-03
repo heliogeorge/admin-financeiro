@@ -4,7 +4,7 @@ const { adminDb } = require('../config/database');
 const { authMiddleware } = require('../middleware/auth');
 const {
   getEmpresas, syncEmpresa, autoConciliarMp, syncRelatoriosEmpresa,
-  gerarRelatorioBackfill, getSaldoContaMp, MP_BANCO_CODIGO,
+  gerarRelatorioBackfill, refreshRelatoriosDia, getSaldoContaMp, MP_BANCO_CODIGO,
 } = require('../services/mpService');
 
 const EXTRATOS = 'extratos_bancarios';
@@ -106,7 +106,18 @@ router.post('/sync', authMiddleware, async (req, res, next) => {
       erros.push({ slug: 'auto-conciliar', label: 'Baixa automática', error: err.message });
     }
 
-    res.json({ resultados, erros, auto });
+    // Extrato do dia sob demanda: pede relatório de hoje ao MP e importa
+    // (desative com { atualizar_dia: false } para um sync rápido)
+    let relatoriosDia = null;
+    if (req.body.atualizar_dia !== false) {
+      try {
+        relatoriosDia = await refreshRelatoriosDia({ username: req.user.username });
+      } catch (err) {
+        erros.push({ slug: 'relatorio-dia', label: 'Relatório do dia', error: err.message });
+      }
+    }
+
+    res.json({ resultados, erros, auto, relatorios_dia: relatoriosDia });
   } catch (err) {
     next(err);
   }
