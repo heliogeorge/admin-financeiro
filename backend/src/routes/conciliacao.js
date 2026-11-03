@@ -22,19 +22,32 @@ const upload = multer({
 const toDateStr = (d) => (d instanceof Date ? d.toISOString().slice(0, 10) : String(d).slice(0, 10));
 
 // Normalização para comparar agência/conta do OFX com o cadastro: só dígitos,
-// sem zeros à esquerda; aceita também a variante sem o último dígito (DV),
-// já que cada lado pode vir com ou sem o dígito verificador.
-const soDigitos = (v) => String(v || '').replace(/\D/g, '').replace(/^0+/, '');
-function variantesConta(v) {
-  const d = soDigitos(v);
-  const set = new Set();
-  if (d) set.add(d);
-  if (d.length > 1) set.add(d.slice(0, -1));
-  return set;
+// sem zeros à esquerda na comparação final. Cada lado pode vir com ou sem o
+// dígito verificador, e o Itaú manda o ACCTID como agência+conta concatenadas
+// (ex.: "8111094838" = ag 8111 + cc 094838), então o cadastro gera também
+// essas variantes.
+const rawDigitos = (v) => String(v || '').replace(/\D/g, '');
+const normDigitos = (v) => rawDigitos(v).replace(/^0+/, '');
+function addVariantes(set, raw) {
+  if (!raw) return;
+  const n = normDigitos(raw);
+  if (n) set.add(n);
+  if (rawDigitos(raw).length > 1) {
+    const semDv = normDigitos(rawDigitos(raw).slice(0, -1));
+    if (semDv) set.add(semDv);
+  }
 }
-function contasBatem(a, b) {
-  const va = variantesConta(a);
-  for (const x of variantesConta(b)) if (va.has(x)) return true;
+function contaOfxBateCadastro(acctidOfx, conta) {
+  const ofx = new Set();
+  addVariantes(ofx, acctidOfx);
+
+  const cadastro = new Set();
+  addVariantes(cadastro, conta.conta);
+  if (conta.agencia && conta.conta) {
+    addVariantes(cadastro, rawDigitos(conta.agencia) + rawDigitos(conta.conta));
+  }
+
+  for (const x of ofx) if (cadastro.has(x)) return true;
   return false;
 }
 
@@ -48,14 +61,14 @@ function validarContaOfx(contaOfx, conta) {
   const problemas = [];
 
   if (contaOfx.bankid && conta.banco_codigo
-    && parseInt(soDigitos(contaOfx.bankid), 10) !== parseInt(soDigitos(conta.banco_codigo), 10)) {
+    && parseInt(normDigitos(contaOfx.bankid), 10) !== parseInt(normDigitos(conta.banco_codigo), 10)) {
     problemas.push('banco');
   }
   if (contaOfx.branchid && conta.agencia
-    && soDigitos(contaOfx.branchid) !== soDigitos(conta.agencia)) {
+    && normDigitos(contaOfx.branchid) !== normDigitos(conta.agencia)) {
     problemas.push('agência');
   }
-  if (contaOfx.acctid && conta.conta && !contasBatem(contaOfx.acctid, conta.conta)) {
+  if (contaOfx.acctid && conta.conta && !contaOfxBateCadastro(contaOfx.acctid, conta)) {
     problemas.push('conta');
   }
 
