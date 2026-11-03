@@ -250,6 +250,13 @@ async function fetchLancamentos(cfg, dias) {
 function lancamentoToExtrato(l) {
   if (String(l.indicadorTipoLancamento) !== '1') return null;
 
+  // Linhas de saldo vêm como tipo 1: "SALDO ANTERIOR" (codigoHistorico 0)
+  // e "S A L D O" (grafado com espaços, com histórico preenchido).
+  const descricaoBruta = (l.textoDescricaoSubHistorico || l.textoDescricaoHistorico || '').trim();
+  if (!parseInt(l.codigoHistorico, 10)) return null;
+  if (/\bsaldo\b/i.test(descricaoBruta.replace(/\s+/g, ' '))
+    || /S\s*A\s*L\s*D\s*O/i.test(descricaoBruta)) return null;
+
   const valor = Math.abs(parseFloat(l.valorLancamento) || 0);
   if (!valor) return null;
 
