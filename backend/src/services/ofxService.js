@@ -64,6 +64,15 @@ function parseOfx(ofxText) {
     };
   });
 
+  // Saldo informado pelo banco no fechamento do extrato (LEDGERBAL)
+  let saldo = null;
+  const ledger = extractOne(xml, 'LEDGERBAL');
+  if (ledger) {
+    const valor = parseFloat(extractOne(ledger, 'BALAMT'));
+    const data = parseOfxDate(extractOne(ledger, 'DTASOF'));
+    if (!Number.isNaN(valor) && data) saldo = { valor, data };
+  }
+
   return {
     conta: {
       acctid: bankAcct,
@@ -71,6 +80,7 @@ function parseOfx(ofxText) {
       branchid: branchId,
       acctType,
     },
+    saldo,
     transactions,
   };
 }

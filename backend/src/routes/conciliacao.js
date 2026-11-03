@@ -19,6 +19,53 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 },
 });
 
+const toDateStr = (d) => (d instanceof Date ? d.toISOString().slice(0, 10) : String(d).slice(0, 10));
+
+// Normalização para comparar agência/conta do OFX com o cadastro: só dígitos,
+// sem zeros à esquerda; aceita também a variante sem o último dígito (DV),
+// já que cada lado pode vir com ou sem o dígito verificador.
+const soDigitos = (v) => String(v || '').replace(/\D/g, '').replace(/^0+/, '');
+function variantesConta(v) {
+  const d = soDigitos(v);
+  const set = new Set();
+  if (d) set.add(d);
+  if (d.length > 1) set.add(d.slice(0, -1));
+  return set;
+}
+function contasBatem(a, b) {
+  const va = variantesConta(a);
+  for (const x of variantesConta(b)) if (va.has(x)) return true;
+  return false;
+}
+
+/**
+ * Compara os dados bancários do OFX com a conta selecionada. Retorna null
+ * quando compatível (ou quando falta informação para comparar) e a mensagem
+ * de erro quando é claramente outra conta.
+ */
+function validarContaOfx(contaOfx, conta) {
+  if (!contaOfx) return null;
+  const problemas = [];
+
+  if (contaOfx.bankid && conta.banco_codigo
+    && parseInt(soDigitos(contaOfx.bankid), 10) !== parseInt(soDigitos(conta.banco_codigo), 10)) {
+    problemas.push('banco');
+  }
+  if (contaOfx.branchid && conta.agencia
+    && soDigitos(contaOfx.branchid) !== soDigitos(conta.agencia)) {
+    problemas.push('agência');
+  }
+  if (contaOfx.acctid && conta.conta && !contasBatem(contaOfx.acctid, conta.conta)) {
+    problemas.push('conta');
+  }
+
+  if (problemas.length === 0) return null;
+  return `O arquivo OFX é do banco ${contaOfx.bankid || '?'}, agência ${contaOfx.branchid || '?'}, `
+    + `conta ${contaOfx.acctid || '?'} — não bate (${problemas.join(', ')}) com a conta selecionada `
+    + `"${conta.nome}" (banco ${conta.banco_codigo || '?'}, ag ${conta.agencia || '?'}, cc ${conta.conta || '?'}). `
+    + 'Selecione a conta bancária correspondente ao arquivo.';
+}
+
 /**
  * POST /api/conciliacao/ofx/:contaBancariaId
  * Importa OFX como extratos pendentes de conciliação.
@@ -32,7 +79,10 @@ router.post('/ofx/:contaBancariaId', authMiddleware, upload.single('arquivo'), a
     if (!conta) return res.status(404).json({ error: 'Conta bancária não encontrada' });
 
     const texto = req.file.buffer.toString('latin1'); // OFX costuma vir em ISO-8859-1
-    const { transactions } = parseOfx(texto);
+    const { conta: contaOfx, saldo, transactions } = parseOfx(texto);
+
+    const erroConta = validarContaOfx(contaOfx, conta);
+    if (erroConta) return res.status(400).json({ error: erroConta });
 
     let inserted = 0;
     let duplicated = 0;
@@ -60,11 +110,25 @@ router.post('/ofx/:contaBancariaId', authMiddleware, upload.single('arquivo'), a
       inserted++;
     }
 
+    // Saldo de fechamento do extrato (LEDGERBAL): vira o saldo da conta na
+    // listagem, se for mais recente que o último registrado.
+    let saldoAtualizado = false;
+    if (saldo && saldo.data
+      && (!conta.data_saldo_extrato || toDateStr(conta.data_saldo_extrato) <= saldo.data)) {
+      await adminDb(BANCOS).where('id', conta.id).update({
+        saldo_extrato: saldo.valor,
+        data_saldo_extrato: saldo.data,
+      });
+      saldoAtualizado = true;
+    }
+
     res.status(201).json({
       message: `${inserted} lançamentos importados`,
       inserted,
       duplicated,
       total: transactions.length,
+      saldo_extrato: saldoAtualizado ? saldo.valor : null,
+      data_saldo_extrato: saldoAtualizado ? saldo.data : null,
     });
   } catch (err) {
     next(err);
@@ -237,6 +301,138 @@ router.post('/extratos/:id/ignorar', authMiddleware, async (req, res, next) => {
   try {
     await adminDb(EXTRATOS).where('id', req.params.id).update({ status: 'ignorado' });
     res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/conciliacao/extrato-conta/:contaId?inicio=&fim=
+ * Extrato da conta com saldo acumulado linha a linha. Fonte dos movimentos:
+ * mp_movimentos para contas MercadoPago (cobertura completa, valores
+ * líquidos), extratos_bancarios para as demais. O saldo é ancorado no melhor
+ * ponto conhecido: saldo do extrato OFX (LEDGERBAL), ou saldo inicial da
+ * conta — a resposta diz qual âncora foi usada.
+ */
+router.get('/extrato-conta/:contaId', async (req, res, next) => {
+  try {
+    const conta = await adminDb(BANCOS).where('id', req.params.contaId).first();
+    if (!conta) return res.status(404).json({ error: 'Conta bancária não encontrada' });
+
+    const hoje = new Date().toISOString().slice(0, 10);
+    const fim = (req.query.fim || hoje).slice(0, 10);
+    const inicioDefault = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+    const inicio = (req.query.inicio || inicioDefault).slice(0, 10);
+
+    const isMp = conta.banco_codigo === '323';
+
+    // Âncora de saldo: fim do dia da data da âncora
+    let anchor;
+    if (!isMp && conta.saldo_extrato !== null && conta.saldo_extrato !== undefined
+      && conta.data_saldo_extrato) {
+      anchor = {
+        saldo: parseFloat(conta.saldo_extrato),
+        data: toDateStr(conta.data_saldo_extrato),
+        fonte: 'extrato_ofx',
+      };
+    } else if (conta.data_saldo_inicial) {
+      anchor = {
+        saldo: parseFloat(conta.saldo_inicial || 0),
+        data: toDateStr(conta.data_saldo_inicial),
+        fonte: 'saldo_inicial',
+      };
+    } else {
+      // sem data: saldo_inicial vale antes de qualquer movimento conhecido
+      anchor = { saldo: parseFloat(conta.saldo_inicial || 0), data: null, fonte: 'saldo_inicial' };
+    }
+
+    // Movimentos no período (asc) e soma líquida fora do período p/ âncora
+    let rows;
+    let netAte; // função que soma net no intervalo (a, b] por data
+    if (isMp) {
+      rows = await adminDb('mp_movimentos')
+        .where('conta_bancaria_id', conta.id)
+        .where('transaction_date', '>=', `${inicio} 00:00:00`)
+        .where('transaction_date', '<=', `${fim} 23:59:59`)
+        .orderBy('transaction_date', 'asc').orderBy('id', 'asc')
+        .select('transaction_date as data', 'descricao', 'net_amount', 'transaction_type', 'source_id');
+      rows = rows.map((r) => ({
+        data: r.data,
+        descricao: r.descricao || r.transaction_type,
+        tipo: parseFloat(r.net_amount) >= 0 ? 'credito' : 'debito',
+        valor: Math.abs(parseFloat(r.net_amount)),
+        net: parseFloat(r.net_amount),
+        status: null,
+        documento: r.source_id,
+      }));
+      netAte = async (aExclusive, bInclusive) => {
+        const q = adminDb('mp_movimentos').where('conta_bancaria_id', conta.id);
+        if (aExclusive) q.where('transaction_date', '>', `${aExclusive} 23:59:59`);
+        if (bInclusive) q.where('transaction_date', '<=', `${bInclusive} 23:59:59`);
+        const agg = await q.first(adminDb.raw('COALESCE(SUM(net_amount),0) as total'));
+        return parseFloat(agg.total || 0);
+      };
+    } else {
+      rows = await adminDb(EXTRATOS)
+        .where('conta_bancaria_id', conta.id)
+        .where('data_transacao', '>=', inicio)
+        .where('data_transacao', '<=', fim)
+        .whereNot('status', 'ignorado')
+        .orderBy('data_transacao', 'asc').orderBy('id', 'asc')
+        .select('id', 'data_transacao as data', 'descricao', 'valor', 'tipo', 'status', 'documento');
+      rows = rows.map((r) => ({
+        extrato_id: r.id,
+        data: r.data,
+        descricao: r.descricao,
+        tipo: r.tipo,
+        valor: parseFloat(r.valor),
+        net: r.tipo === 'credito' ? parseFloat(r.valor) : -parseFloat(r.valor),
+        status: r.status,
+        documento: r.documento,
+      }));
+      netAte = async (aExclusive, bInclusive) => {
+        const q = adminDb(EXTRATOS).where('conta_bancaria_id', conta.id).whereNot('status', 'ignorado');
+        if (aExclusive) q.where('data_transacao', '>', aExclusive);
+        if (bInclusive) q.where('data_transacao', '<=', bInclusive);
+        const agg = await q.first(
+          adminDb.raw("COALESCE(SUM(CASE WHEN tipo='credito' THEN valor ELSE -valor END),0) as total")
+        );
+        return parseFloat(agg.total || 0);
+      };
+    }
+
+    // Saldo no fim do dia anterior ao início da janela
+    const diaAntes = new Date(new Date(`${inicio}T12:00:00Z`).getTime() - 86400000)
+      .toISOString().slice(0, 10);
+    let saldoInicialJanela;
+    if (!anchor.data) {
+      saldoInicialJanela = anchor.saldo + await netAte(null, diaAntes);
+    } else if (anchor.data <= diaAntes) {
+      saldoInicialJanela = anchor.saldo + await netAte(anchor.data, diaAntes);
+    } else {
+      // âncora dentro ou depois da janela: volta no tempo
+      saldoInicialJanela = anchor.saldo - await netAte(diaAntes, anchor.data);
+    }
+
+    let saldo = saldoInicialJanela;
+    const lancamentos = rows.map((r) => {
+      saldo = Math.round((saldo + r.net) * 100) / 100;
+      return { ...r, saldo_apos: saldo };
+    });
+
+    res.json({
+      conta: {
+        id: conta.id,
+        nome: conta.nome,
+        banco_codigo: conta.banco_codigo,
+        fonte_movimentos: isMp ? 'mercadopago' : 'extratos',
+      },
+      periodo: { inicio, fim },
+      ancora: anchor,
+      saldo_inicial_periodo: Math.round(saldoInicialJanela * 100) / 100,
+      saldo_final_periodo: saldo,
+      lancamentos,
+    });
   } catch (err) {
     next(err);
   }

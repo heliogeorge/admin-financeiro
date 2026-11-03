@@ -153,6 +153,7 @@ export const conciliacaoApi = {
     api.post(`/conciliacao/extratos/${extratoId}/criar-conta`, data),
   ignorar: (extratoId) => api.post(`/conciliacao/extratos/${extratoId}/ignorar`),
   sugestoes: (extratoId, params) => api.get(`/conciliacao/sugestoes/${extratoId}`, { params }),
+  extratoConta: (contaId, params) => api.get(`/conciliacao/extrato-conta/${contaId}`, { params }),
 };
 
 export const mpApi = {

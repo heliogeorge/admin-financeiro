@@ -55,6 +55,17 @@ router.get('/', async (req, res, next) => {
           }
         }
 
+        // Contas com extrato OFX importado usam o saldo informado pelo banco
+        // no fechamento do extrato (LEDGERBAL).
+        if (conta.saldo_extrato !== null && conta.saldo_extrato !== undefined) {
+          return {
+            ...conta,
+            total_saidas: null,
+            saldo_estimado: parseFloat(conta.saldo_extrato),
+            saldo_fonte: 'extrato',
+          };
+        }
+
         let saidas = 0;
 
         if (podeCalcularSaidas) {

@@ -5,7 +5,7 @@ import {
 import { formatCurrency, formatDate } from '../lib/utils';
 import {
   Plus, X, Pencil, Trash2, RefreshCw, Upload, Check,
-  Landmark, Percent, FileText, Link2, Search,
+  Landmark, Percent, FileText, Link2, Search, ScrollText,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import LojaSelect from '../components/LojaSelect';
@@ -238,6 +238,11 @@ function ContasBancariasTab() {
                   {c.saldo_fonte === 'mercadopago' && (
                     <span className="block text-[10px] font-normal text-sky-600" title="Calculado pelo relatório oficial de dinheiro em conta do MercadoPago">
                       via relatório MP
+                    </span>
+                  )}
+                  {c.saldo_fonte === 'extrato' && (
+                    <span className="block text-[10px] font-normal text-indigo-600" title="Saldo informado pelo banco no fechamento do último extrato OFX importado">
+                      via extrato OFX{c.data_saldo_extrato ? ` (${formatDate(c.data_saldo_extrato)})` : ''}
                     </span>
                   )}
                 </td>
@@ -946,6 +951,135 @@ function ConciliacaoTab() {
 }
 
 // ============================================
+// Extrato com saldo acumulado
+// ============================================
+function ExtratoTab() {
+  const [contas, setContas] = useState([]);
+  const [contaId, setContaId] = useState('');
+  const [inicio, setInicio] = useState(() => new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10));
+  const [fim, setFim] = useState(() => new Date().toISOString().slice(0, 10));
+  const [dados, setDados] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    contasBancariasApi.list({ ativo: true }).then((r) => {
+      const lista = r.data.data || [];
+      setContas(lista);
+      if (!contaId && lista.length > 0) setContaId(lista[0].id);
+    });
+  }, []);
+
+  const fetchExtrato = async () => {
+    if (!contaId) return;
+    setLoading(true);
+    try {
+      const res = await conciliacaoApi.extratoConta(contaId, { inicio, fim });
+      setDados(res.data);
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Erro ao carregar extrato');
+      setDados(null);
+    } finally { setLoading(false); }
+  };
+
+  useEffect(() => { fetchExtrato(); }, [contaId, inicio, fim]);
+
+  const FONTE_ANCORA = {
+    extrato_ofx: 'saldo do último extrato OFX',
+    saldo_inicial: 'saldo inicial cadastrado na conta',
+  };
+
+  return (
+    <>
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
+        <select value={contaId} onChange={(e) => setContaId(e.target.value)} className="input-field w-64">
+          {contas.map((c) => <option key={c.id} value={c.id}>{c.nome}</option>)}
+        </select>
+        <input type="date" value={inicio} onChange={(e) => setInicio(e.target.value)} className="input-field w-40" />
+        <span className="text-gray-400 text-sm">até</span>
+        <input type="date" value={fim} onChange={(e) => setFim(e.target.value)} className="input-field w-40" />
+        {dados && (
+          <span className="text-xs text-gray-400 ml-auto">
+            Saldo ancorado no {FONTE_ANCORA[dados.ancora?.fonte] || 'saldo inicial'}
+            {dados.ancora?.data ? ` de ${formatDate(dados.ancora.data)}` : ''}
+            {dados.conta?.fonte_movimentos === 'mercadopago' ? ' · movimentos do relatório MP' : ''}
+          </span>
+        )}
+      </div>
+
+      {dados && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+          <div className="card p-3">
+            <p className="text-xs text-gray-500">Saldo em {formatDate(dados.periodo.inicio)}</p>
+            <p className="text-lg font-bold">{formatCurrency(dados.saldo_inicial_periodo)}</p>
+          </div>
+          <div className="card p-3">
+            <p className="text-xs text-gray-500">Saldo em {formatDate(dados.periodo.fim)}</p>
+            <p className={`text-lg font-bold ${dados.saldo_final_periodo < 0 ? 'text-red-600' : 'text-emerald-600'}`}>
+              {formatCurrency(dados.saldo_final_periodo)}
+            </p>
+          </div>
+          <div className="card p-3">
+            <p className="text-xs text-gray-500">Entradas</p>
+            <p className="text-lg font-bold text-emerald-600">
+              {formatCurrency(dados.lancamentos.filter((l) => l.tipo === 'credito').reduce((s, l) => s + l.valor, 0))}
+            </p>
+          </div>
+          <div className="card p-3">
+            <p className="text-xs text-gray-500">Saídas</p>
+            <p className="text-lg font-bold text-red-600">
+              {formatCurrency(dados.lancamentos.filter((l) => l.tipo === 'debito').reduce((s, l) => s + l.valor, 0))}
+            </p>
+          </div>
+        </div>
+      )}
+
+      <div className="card overflow-hidden">
+        <table className="w-full">
+          <thead>
+            <tr className="border-b border-gray-100 bg-gray-50/50">
+              <th className="table-header px-3 py-3 text-left">Data</th>
+              <th className="table-header px-3 py-3 text-left">Descrição</th>
+              <th className="table-header px-3 py-3 text-center">Status</th>
+              <th className="table-header px-3 py-3 text-right">Valor</th>
+              <th className="table-header px-3 py-3 text-right">Saldo</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">
+                <RefreshCw size={18} className="animate-spin inline mr-2" /> Carregando...
+              </td></tr>
+            ) : !dados || dados.lancamentos.length === 0 ? (
+              <tr><td colSpan={5} className="px-4 py-8 text-center text-gray-400">
+                Nenhum movimento no período.
+              </td></tr>
+            ) : dados.lancamentos.map((l, i) => (
+              <tr key={i} className="border-b border-gray-50 hover:bg-gray-50/30">
+                <td className="px-3 py-2.5 text-sm whitespace-nowrap">{formatDate(l.data)}</td>
+                <td className="px-3 py-2.5 text-sm">{l.descricao || '—'}</td>
+                <td className="px-3 py-2.5 text-center">
+                  {l.status && (
+                    <span className={`px-2 py-0.5 rounded-full text-xs ${
+                      l.status === 'conciliado' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
+                    }`}>{l.status}</span>
+                  )}
+                </td>
+                <td className={`px-3 py-2.5 text-right text-sm font-semibold whitespace-nowrap ${l.tipo === 'debito' ? 'text-red-600' : 'text-emerald-600'}`}>
+                  {l.tipo === 'debito' ? '−' : '+'}{formatCurrency(l.valor)}
+                </td>
+                <td className={`px-3 py-2.5 text-right text-sm font-mono whitespace-nowrap ${l.saldo_apos < 0 ? 'text-red-600' : 'text-gray-700'}`}>
+                  {formatCurrency(l.saldo_apos)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+// ============================================
 // Página principal com abas
 // ============================================
 export default function ConfigBancariaPage() {
@@ -965,12 +1099,14 @@ export default function ConfigBancariaPage() {
         onChange={setTab}
         tabs={[
           { value: 'contas', label: 'Contas Bancárias', icon: Landmark },
+          { value: 'extrato', label: 'Extrato', icon: ScrollText },
           { value: 'regras', label: 'Regras de Juros', icon: Percent },
           { value: 'conciliacao', label: 'Conciliação OFX', icon: FileText },
         ]}
       />
 
       {tab === 'contas' && <ContasBancariasTab />}
+      {tab === 'extrato' && <ExtratoTab />}
       {tab === 'regras' && <RegrasJurosTab />}
       {tab === 'conciliacao' && <ConciliacaoTab />}
     </div>
