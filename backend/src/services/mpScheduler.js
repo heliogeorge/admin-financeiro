@@ -6,7 +6,7 @@
  * Desative com MP_SYNC_AUTO=0 no .env.
  */
 const {
-  getEmpresas, syncEmpresa, autoConciliarMp, syncRelatoriosEmpresa,
+  getEmpresas, syncEmpresa, autoConciliarMp, syncRelatoriosEmpresa, enriquecerMovimentos,
 } = require('./mpService');
 const bbService = require('./bbService');
 
@@ -43,6 +43,14 @@ async function rodarSyncDiario() {
           + `${rel.movimentos_inseridos} movimentos novos`);
       } catch (err) {
         console.error(`[mp-scheduler] erro nos relatórios ${emp.slug}:`, err.message);
+      }
+      try {
+        const e = await enriquecerMovimentos(emp.slug, { dias: 15 });
+        if (e.atualizados > 0) {
+          console.log(`[mp-scheduler] ${e.label}: ${e.atualizados} descrições preenchidas`);
+        }
+      } catch (err) {
+        console.error(`[mp-scheduler] erro ao enriquecer descrições ${emp.slug}:`, err.message);
       }
     }
     if (bbService.isConfigured()) {

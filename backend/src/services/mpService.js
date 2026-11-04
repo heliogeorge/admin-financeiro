@@ -170,16 +170,17 @@ function paymentToExtrato(p, mpUserId) {
 }
 
 /**
- * Busca paginada dos pagamentos em que a conta MP é a pagadora.
+ * Busca paginada em /v1/payments/search. Sem filtro extra o MP devolve os
+ * pagamentos RECEBIDOS (conta como collector); com payer.id, os pagos.
  */
-async function fetchPagamentosPayer(token, mpUserId, dias) {
+async function fetchPagamentosSearch(token, dias, extraQs = '') {
   const end = new Date().toISOString();
   const begin = new Date(Date.now() - dias * 86400000).toISOString();
   const all = [];
   let offset = 0;
 
   while (true) {
-    const qs = `payer.id=${mpUserId}&range=date_created&begin_date=${begin}&end_date=${end}`
+    const qs = `${extraQs}range=date_created&begin_date=${begin}&end_date=${end}`
       + `&sort=date_created&criteria=desc&limit=50&offset=${offset}`;
     const page = await mpGet(token, `/v1/payments/search?${qs}`);
     const results = page.results || [];
@@ -189,6 +190,13 @@ async function fetchPagamentosPayer(token, mpUserId, dias) {
     if (results.length === 0 || offset >= total || offset >= 1000) break;
   }
   return all;
+}
+
+/**
+ * Busca paginada dos pagamentos em que a conta MP é a pagadora.
+ */
+function fetchPagamentosPayer(token, mpUserId, dias) {
+  return fetchPagamentosSearch(token, dias, `payer.id=${mpUserId}&`);
 }
 
 /**
@@ -287,7 +295,28 @@ function parseRelatorioCsv(text) {
   });
 }
 
-const toMysqlDt = (iso) => (iso ? String(iso).replace('T', ' ').replace(/\.\d+.*$|Z$/, '').slice(0, 19) : null);
+const SP_DT_FMT = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'America/Sao_Paulo',
+  year: 'numeric', month: '2-digit', day: '2-digit',
+  hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+});
+
+// O MP rende o MESMO relatório ora em -03:00 ora em -04:00, então a data é
+// normalizada para o horário de São Paulo quando o offset vem explícito —
+// sem isso o mesmo lançamento entra duas vezes com 1h de diferença.
+function toMysqlDt(iso) {
+  if (!iso) return null;
+  const s = String(iso).trim();
+  if (/(?:Z|[+-]\d{2}:?\d{2})$/.test(s)) {
+    const d = new Date(s);
+    if (!Number.isNaN(d.getTime())) {
+      const parts = SP_DT_FMT.formatToParts(d);
+      const g = (t) => parts.find((p) => p.type === t).value;
+      return `${g('year')}-${g('month')}-${g('day')} ${g('hour')}:${g('minute')}:${g('second')}`;
+    }
+  }
+  return s.replace('T', ' ').replace(/\.\d+.*$|Z$/, '').slice(0, 19);
+}
 
 /**
  * Importa para mp_movimentos os relatórios ainda não processados da empresa.
@@ -332,6 +361,27 @@ async function syncRelatoriosEmpresa(slug, { username = null } = {}) {
       const seq = vistos.get(base) || 0;
       vistos.set(base, seq + 1);
       const rowHash = crypto.createHash('sha1').update(`${base}|${seq}`).digest('hex');
+
+      // O hash falha quando outro arquivo rendeu o mesmo lançamento em fuso
+      // diferente (data deslocada ±1h): checa por source_id + tipo + valor
+      // líquido numa janela de ±3h em arquivos anteriores.
+      const dtNorm = toMysqlDt(r.TRANSACTION_DATE);
+      if (r.SOURCE_ID && dtNorm && seq === 0) {
+        const centro = new Date(`${dtNorm.replace(' ', 'T')}Z`);
+        const wall = (d) => d.toISOString().slice(0, 19).replace('T', ' ');
+        const parecido = await adminDb(MOVIMENTOS)
+          .where('conta_bancaria_id', conta.id)
+          .whereNot('file_name', fileName)
+          .where('source_id', String(r.SOURCE_ID).slice(0, 80))
+          .where('transaction_type', (r.TRANSACTION_TYPE || 'DESCONHECIDO').slice(0, 40))
+          .whereBetween('net_amount', [net - 0.005, net + 0.005])
+          .whereBetween('transaction_date', [
+            wall(new Date(centro.getTime() - 3 * 3600000)),
+            wall(new Date(centro.getTime() + 3 * 3600000)),
+          ])
+          .first('id');
+        if (parecido) { duplicados++; continue; }
+      }
 
       try {
         await adminDb(MOVIMENTOS).insert({
@@ -439,6 +489,79 @@ async function refreshRelatoriosDia({ username = null, timeoutMs = 75000 } = {})
   }
 
   return resultados;
+}
+
+// "ITAÚ UNIBANCO S.A." -> "Itaú Unibanco S.A."
+function tituloAmigavel(s) {
+  return String(s).toLowerCase().replace(/(^|[\s(])\S/g, (c) => c.toUpperCase())
+    .replace(/\bS\.a\./g, 'S.A.').replace(/\bLtda\b/gi, 'Ltda');
+}
+
+/**
+ * Nome amigável de quem pagou, a partir do payment (visão collector):
+ * descrição/título do item, nome no cartão, ou o banco de origem do pix
+ * (o MP mascara a identidade do pagador em pix via QR).
+ */
+function paymentToNomePagador(p) {
+  let direto = (p.description || '').trim()
+    || ((p.additional_info && p.additional_info.items && p.additional_info.items[0]
+      && p.additional_info.items[0].title) || '').trim();
+  // "Olá, você recebeu uma transferência de TikTok Shop" -> "Transferência de TikTok Shop"
+  direto = direto.replace(/^Olá,?\s*você recebeu uma\s*/i, '');
+  if (direto && !/^\d+$/.test(direto)) return direto;
+  const holder = (p.card && p.card.cardholder && p.card.cardholder.name || '').trim();
+  if (holder) return tituloAmigavel(holder);
+  const poi = p.point_of_interaction || {};
+  const banco = poi.transaction_data && poi.transaction_data.bank_info
+    && poi.transaction_data.bank_info.payer
+    && poi.transaction_data.bank_info.payer.long_name;
+  if (banco) return `via ${tituloAmigavel(banco)}`;
+  return direto || '';
+}
+
+/**
+ * Preenche a descrição dos movimentos do relatório (vem vazia do CSV) com os
+ * dados dos pagamentos recebidos: "Recebimento (pix) — via Banco X",
+ * "Recebimento (visa) — Fulano". Os pagamentos FEITOS já ganham descrição no
+ * extrato de conciliação (extratos_bancarios), que tem prioridade na tela.
+ */
+async function enriquecerMovimentos(slug, { dias = 15 } = {}) {
+  const empresa = getEmpresa(slug);
+  if (!empresa) throw new Error(`Empresa MP não configurada: ${slug}`);
+
+  const me = await mpGet(empresa.token, '/users/me');
+  const conta = await ensureContaBancaria(empresa, me.id);
+
+  const desde = new Date(Date.now() - dias * 86400000).toISOString().slice(0, 10);
+  const semDescricao = await adminDb(MOVIMENTOS)
+    .where('conta_bancaria_id', conta.id)
+    .whereNull('descricao')
+    .whereNotNull('source_id')
+    .where('transaction_date', '>=', `${desde} 00:00:00`)
+    .select('id', 'source_id', 'net_amount', 'payment_method');
+  if (semDescricao.length === 0) {
+    return { slug, label: empresa.label, candidatos: 0, atualizados: 0 };
+  }
+
+  const recebidos = await fetchPagamentosSearch(empresa.token, dias);
+  const porId = new Map(recebidos.map((p) => [String(p.id), p]));
+
+  let atualizados = 0;
+  for (const mv of semDescricao) {
+    const p = porId.get(String(mv.source_id));
+    if (!p) continue;
+    const nome = paymentToNomePagador(p);
+    if (!nome) continue;
+    const rotulo = parseFloat(mv.net_amount) >= 0 ? 'Recebimento' : 'Pagamento';
+    const metodo = mv.payment_method && mv.payment_method !== 'available_money'
+      ? ` (${mv.payment_method})` : '';
+    await adminDb(MOVIMENTOS).where('id', mv.id).update({
+      descricao: `${rotulo}${metodo} — ${nome}`.slice(0, 255),
+    });
+    atualizados++;
+  }
+
+  return { slug, label: empresa.label, candidatos: semDescricao.length, atualizados };
 }
 
 /**
@@ -612,6 +735,7 @@ module.exports = {
   syncRelatoriosEmpresa,
   gerarRelatorioBackfill,
   refreshRelatoriosDia,
+  enriquecerMovimentos,
   getSaldoContaMp,
   MP_BANCO_CODIGO,
 };

@@ -4,7 +4,8 @@ const { adminDb } = require('../config/database');
 const { authMiddleware } = require('../middleware/auth');
 const {
   getEmpresas, syncEmpresa, autoConciliarMp, syncRelatoriosEmpresa,
-  gerarRelatorioBackfill, refreshRelatoriosDia, getSaldoContaMp, MP_BANCO_CODIGO,
+  gerarRelatorioBackfill, refreshRelatoriosDia, enriquecerMovimentos,
+  getSaldoContaMp, MP_BANCO_CODIGO,
 } = require('../services/mpService');
 
 const EXTRATOS = 'extratos_bancarios';
@@ -117,7 +118,18 @@ router.post('/sync', authMiddleware, async (req, res, next) => {
       }
     }
 
-    res.json({ resultados, erros, auto, relatorios_dia: relatoriosDia });
+    // Nomes amigáveis nos movimentos recém-importados (pagador/banco de origem)
+    const enriquecidos = [];
+    for (const emp of empresas) {
+      try {
+        const e = await enriquecerMovimentos(emp.slug, { dias: Math.min(dias, 30) });
+        if (e.atualizados > 0) enriquecidos.push(e);
+      } catch (err) {
+        erros.push({ slug: emp.slug, label: `${emp.label} (descrições)`, error: err.message });
+      }
+    }
+
+    res.json({ resultados, erros, auto, relatorios_dia: relatoriosDia, enriquecidos });
   } catch (err) {
     next(err);
   }

@@ -739,12 +739,30 @@ function ConciliarModal({ extrato, onClose, onDone }) {
   );
 }
 
+function SortableTh({ label, campo, sort, onSort, align = 'left' }) {
+  const ativo = sort.campo === campo;
+  return (
+    <th className={`table-header px-3 py-3 text-${align}`}>
+      <button onClick={() => onSort(campo)}
+        className={`inline-flex items-center gap-1 hover:text-gray-900 ${ativo ? 'text-brand-700' : ''}`}
+        title={`Ordenar por ${label.toLowerCase()}`}>
+        {label}
+        <span className="text-[10px] leading-none">
+          {ativo ? (sort.dir === 'asc' ? '▲' : '▼') : '↕'}
+        </span>
+      </button>
+    </th>
+  );
+}
+
 function ConciliacaoTab() {
   const [contas, setContas] = useState([]);
   const [contaId, setContaId] = useState('');
   const [extratos, setExtratos] = useState([]);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState('pendente');
+  const [tipoFiltro, setTipoFiltro] = useState('');
+  const [sort, setSort] = useState({ campo: 'data', dir: 'desc' });
   const [uploading, setUploading] = useState(false);
   const [syncingMp, setSyncingMp] = useState(false);
   const [syncingBb, setSyncingBb] = useState(false);
@@ -794,6 +812,26 @@ function ConciliacaoTab() {
     fetchExtratos();
   };
 
+  const handleSort = (campo) => {
+    setSort((s) => (s.campo === campo
+      ? { campo, dir: s.dir === 'asc' ? 'desc' : 'asc' }
+      : { campo, dir: campo === 'valor' ? 'desc' : 'desc' }));
+  };
+
+  const extratosVisiveis = extratos
+    .filter((e) => !tipoFiltro || e.tipo === tipoFiltro)
+    .slice()
+    .sort((a, b) => {
+      const mult = sort.dir === 'asc' ? 1 : -1;
+      if (sort.campo === 'valor') {
+        return ((parseFloat(a.valor) || 0) - (parseFloat(b.valor) || 0)) * mult;
+      }
+      const da = String(a.data_transacao);
+      const db = String(b.data_transacao);
+      if (da !== db) return da < db ? -mult : mult;
+      return (a.id - b.id) * mult;
+    });
+
   const handleSyncBb = async () => {
     setSyncingBb(true);
     try {
@@ -818,7 +856,10 @@ function ConciliacaoTab() {
     setSyncingMp(true);
     try {
       const res = await mpApi.sync({ dias: 60 });
-      const { resultados = [], erros = [], auto, relatorios_dia: relatoriosDia } = res.data;
+      const {
+        resultados = [], erros = [], auto,
+        relatorios_dia: relatoriosDia, enriquecidos = [],
+      } = res.data;
       for (const r of resultados) {
         toast.success(`${r.label}: ${r.inserted} novos (${r.duplicated} já existiam)`, { duration: 6000 });
       }
@@ -828,6 +869,9 @@ function ConciliacaoTab() {
         } else if (r.solicitado) {
           toast(`${r.label}: relatório do dia ainda em geração no MP — sincronize de novo em ~1 min para importá-lo`, { duration: 9000, icon: '⏳' });
         }
+      }
+      for (const e of enriquecidos) {
+        toast.success(`${e.label}: ${e.atualizados} lançamentos do extrato ganharam descrição`, { duration: 6000, icon: '🏷️' });
       }
       for (const e of erros) {
         toast.error(`${e.label}: ${e.error}`, { duration: 8000 });
@@ -854,7 +898,7 @@ function ConciliacaoTab() {
 
   return (
     <>
-      <div className="flex items-center gap-3 mb-4">
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
         <select value={contaId} onChange={(e) => setContaId(e.target.value)} className="input-field w-64">
           <option value="">Selecione a conta bancária</option>
           {contas.map(c => <option key={c.id} value={c.id}>{c.nome}</option>)}
@@ -865,6 +909,24 @@ function ConciliacaoTab() {
           <option value="ignorado">Ignorados</option>
           <option value="">Todos</option>
         </select>
+        <div className="flex shrink-0 rounded-lg border border-gray-200 overflow-hidden text-sm">
+          {[
+            { value: '', label: 'Todos' },
+            { value: 'credito', label: 'Créditos' },
+            { value: 'debito', label: 'Débitos' },
+          ].map((t) => (
+            <button key={t.value} onClick={() => setTipoFiltro(t.value)}
+              className={`px-3 py-2 font-medium transition-colors ${
+                tipoFiltro === t.value
+                  ? (t.value === 'credito' ? 'bg-emerald-600 text-white'
+                    : t.value === 'debito' ? 'bg-red-600 text-white'
+                    : 'bg-gray-700 text-white')
+                  : 'bg-white text-gray-500 hover:bg-gray-50'
+              }`}>
+              {t.label}
+            </button>
+          ))}
+        </div>
         <label className={`btn-primary cursor-pointer ${uploading ? 'opacity-50' : ''}`}>
           <Upload size={16} /> {uploading ? 'Enviando...' : 'Importar OFX'}
           <input type="file" accept=".ofx,.OFX" className="hidden"
@@ -888,11 +950,11 @@ function ConciliacaoTab() {
         <table className="w-full">
           <thead>
             <tr className="border-b border-gray-100 bg-gray-50/50">
-              <th className="table-header px-3 py-3 text-left">Data</th>
+              <SortableTh label="Data" campo="data" sort={sort} onSort={handleSort} />
               <th className="table-header px-3 py-3 text-left">Descrição</th>
               <th className="table-header px-3 py-3 text-left">Documento</th>
               <th className="table-header px-3 py-3 text-center">Tipo</th>
-              <th className="table-header px-3 py-3 text-right">Valor</th>
+              <SortableTh label="Valor" campo="valor" sort={sort} onSort={handleSort} align="right" />
               <th className="table-header px-3 py-3 text-center">Status</th>
               <th className="table-header px-3 py-3 text-center">Ações</th>
             </tr>
@@ -902,11 +964,11 @@ function ConciliacaoTab() {
               <tr><td colSpan={7} className="px-4 py-8 text-center">
                 <RefreshCw className="animate-spin inline mr-2" size={18} /> Carregando...
               </td></tr>
-            ) : extratos.length === 0 ? (
+            ) : extratosVisiveis.length === 0 ? (
               <tr><td colSpan={7} className="px-4 py-8 text-center text-gray-400">
                 {!contaId ? 'Selecione uma conta bancária.' : 'Nenhum lançamento.'}
               </td></tr>
-            ) : extratos.map(e => (
+            ) : extratosVisiveis.map(e => (
               <tr key={e.id} className="border-b border-gray-50 hover:bg-gray-50/30">
                 <td className="px-3 py-3 text-sm">{formatDate(e.data_transacao)}</td>
                 <td className="px-3 py-3 text-sm">{e.descricao}</td>
