@@ -161,7 +161,8 @@ async function listFornecedores({ q = null, ativo = null, com_regra = null, page
 // Campos que o app pode editar (regras) — o resto é espelho do ERP
 const CAMPOS_REGRA = [
   'aliases', 'complemento_tipo', 'complemento_fator', 'complemento_base',
-  'complemento_vencimento', 'complemento_dias', 'complemento_obs', 'ativo',
+  'complemento_vencimento', 'complemento_dias', 'complemento_obs',
+  'complemento_desde', 'ativo',
 ];
 
 async function updateRegras(id, payload, username) {
@@ -182,6 +183,15 @@ async function updateRegras(id, payload, username) {
   if (updates.complemento_tipo === 'nenhum') {
     updates.complemento_fator = null;
     updates.complemento_dias = null;
+  }
+  // Ao ligar uma regra sem data de corte, só vale de hoje em diante:
+  // nada de gerar "por fora" retroativo para notas antigas já acertadas.
+  const tipoFinal = updates.complemento_tipo ?? fornecedor.complemento_tipo;
+  const desdeFinal = updates.complemento_desde !== undefined
+    ? updates.complemento_desde
+    : fornecedor.complemento_desde;
+  if (tipoFinal !== 'nenhum' && !desdeFinal) {
+    updates.complemento_desde = new Date().toISOString().slice(0, 10);
   }
   if ((updates.complemento_vencimento ?? fornecedor.complemento_vencimento) === 'data_fixa') {
     const dias = Number(updates.complemento_dias ?? fornecedor.complemento_dias);

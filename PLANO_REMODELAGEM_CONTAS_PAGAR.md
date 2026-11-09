@@ -176,7 +176,14 @@ Ainda a responder:
 - Obs.: Villaggio tem 3 cadastros no ERP (64/224/424); o 64 é o que tem contas.
   Regras reais (fatores por fornecedor) ainda a cadastrar — pergunta F0.
 
-### F3 — Complementos ("por fora")
+### F3 — Complementos ("por fora") ✅ FEITA 09/11/2026
+Implementada conforme abaixo, com ajustes: campo `complemento_desde` na regra
+(só entradas emitidas a partir dali geram "por fora"; default = dia em que a
+regra foi ligada); geração roda ao fim do sync de entradas e via
+`backend/scripts/gerar-complementos.js`; vínculos automáticos usam
+`origem_match='confirmado'`; teste real no Villaggio (30% fictício) validou
+rateio, vencimentos junto dos boletos e `total_esperado` — e foi revertido
+(fatores reais pendentes, pergunta F0).
 - Migration: `total_complemento`/`total_esperado` na entrada.
 - Sync de entradas: ao criar entrada de fornecedor com regra `fator` ativa, gera a(s)
   conta(s) `tipo_titulo='complemento'` (status pendente, sem boleto, forma sugerida

@@ -134,7 +134,8 @@ async function listTitulos(filters = {}) {
           'codiloja', 'origem', 'erp_lancamento', 'descricao', 'historico',
           'data_emissao', 'data_vencimento', 'data_pagamento',
           'valor', 'valor_pago', 'valor_desconto', 'saldo_aberto',
-          'status', 'status_conciliacao', 'forma_pagamento', 'comprovante_path'
+          'status', 'status_conciliacao', 'forma_pagamento', 'comprovante_path',
+          'tipo_titulo'
         )
         .orderBy('data_vencimento', 'asc')
         .orderBy('id', 'asc');
@@ -265,7 +266,8 @@ async function buildTituloDaConta(conta) {
     .where('status', '!=', 'cancelado')
     .select(
       'id', 'documento', 'referencia', 'data_vencimento', 'data_pagamento',
-      'valor', 'valor_pago', 'saldo_aberto', 'status', 'status_conciliacao', 'origem'
+      'valor', 'valor_pago', 'saldo_aberto', 'status', 'status_conciliacao', 'origem',
+      'tipo_titulo'
     )
     .orderBy('data_vencimento', 'asc')
     .orderBy('id', 'asc');

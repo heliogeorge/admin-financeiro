@@ -3,6 +3,7 @@ const router = express.Router();
 const { adminDb } = require('../config/database');
 const { authMiddleware } = require('../middleware/auth');
 const { recalcContaDependencies, recalcEntrada, toNumber, TOLERANCIA } = require('../services/reconciliationService');
+const { criarComplementoManual, gerarComplementosPendentes } = require('../services/complementosService');
 
 const ENTRADAS = 'entradas_mercadoria';
 const ENTRADAS_CONTAS = 'entradas_contas';
@@ -125,6 +126,41 @@ router.get('/resumo', async (req, res, next) => {
  * GET /api/entradas/:id
  * Detalhe da entrada com resumo de pagamentos
  */
+/**
+ * POST /api/entradas/gerar-complementos
+ * Varre as regras de "por fora" (fator) e gera o que estiver pendente.
+ */
+router.post('/gerar-complementos', authMiddleware, async (req, res, next) => {
+  try {
+    const stats = await gerarComplementosPendentes({ username: req.user.username });
+    res.json(stats);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/entradas/:id/complemento
+ * Cria um complemento "por fora" manual (regra valor_informado ou exceção).
+ * Body: { valor, data_vencimento, observacoes }
+ */
+router.post('/:id/complemento', authMiddleware, async (req, res, next) => {
+  try {
+    const conta = await criarComplementoManual(req.params.id, {
+      valor: req.body?.valor,
+      data_vencimento: req.body?.data_vencimento,
+      observacoes: req.body?.observacoes || null,
+      username: req.user.username,
+    });
+    res.status(201).json(conta);
+  } catch (err) {
+    if (err.status === 400 || err.status === 404) {
+      return res.status(err.status).json({ error: err.message });
+    }
+    next(err);
+  }
+});
+
 router.get('/:id', async (req, res, next) => {
   try {
     const entrada = await adminDb(ENTRADAS).where('id', req.params.id).first();
@@ -147,6 +183,7 @@ router.get('/:id', async (req, res, next) => {
         `${CONTAS}.forma_pagamento`,
         `${CONTAS}.erp_lancamento`,
         `${CONTAS}.status_conciliacao`,
+        `${CONTAS}.tipo_titulo`,
       )
       .leftJoin(CONTAS, `${ITENS}.conta_pagar_id`, `${CONTAS}.id`)
       .where(`${ITENS}.entrada_id`, req.params.id)
@@ -168,6 +205,11 @@ router.get('/:id', async (req, res, next) => {
       contasComCheques.push({ ...conta, cheques });
     }
 
+    const itensValidos = itens.filter((item) => item.status !== 'cancelado');
+    const totalComplemento = itensValidos
+      .filter((item) => item.tipo_titulo === 'complemento')
+      .reduce((sum, item) => sum + toNumber(item.valor_item), 0);
+    const totalEsperado = toNumber(entrada.total_faturado) + totalComplemento;
     const totalTitulado = itens.reduce((sum, item) => sum + toNumber(item.valor_item), 0);
     const totalPago = itens
       .filter((item) => item.status === 'pago')
@@ -175,14 +217,24 @@ router.get('/:id', async (req, res, next) => {
     const totalPendente = itens
       .filter((item) => item.status !== 'pago' && item.status !== 'cancelado')
       .reduce((sum, item) => sum + toNumber(item.valor_item), 0);
-    const saldoSemTitulo = toNumber(entrada.total_faturado) - totalTitulado;
-    const saldoAberto = toNumber(entrada.total_faturado) - totalPago;
+    const saldoSemTitulo = totalEsperado - totalTitulado;
+    const saldoAberto = totalEsperado - totalPago;
+
+    // regra de "por fora" do fornecedor (p/ pendência e botão na tela)
+    const fornecedorRegra = entrada.codiforn
+      ? await adminDb('fornecedores')
+        .where('codiforn', String(entrada.codiforn))
+        .first('id', 'complemento_tipo', 'complemento_fator', 'complemento_base', 'complemento_vencimento', 'complemento_dias', 'complemento_desde')
+      : null;
 
     res.json({
       ...entrada,
       pagamentos: contasComCheques,
+      fornecedor_regra: fornecedorRegra || null,
       resumo_pagamento: {
         total_entrada: toNumber(entrada.total_faturado),
+        total_complemento: toNumber(totalComplemento),
+        total_esperado: toNumber(totalEsperado),
         total_titulado: totalTitulado,
         total_pago: totalPago,
         total_pendente: totalPendente,

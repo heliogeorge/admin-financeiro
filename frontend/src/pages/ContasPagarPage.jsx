@@ -1219,7 +1219,14 @@ function TitulosTable({ titulos, loading, expanded, onToggleExpand, onOpenConta 
                         {g.parcelas.map((p) => (
                           <tr key={p.id} className="border-b border-gray-50 last:border-0 hover:bg-gray-50/50">
                             <td className="px-3 py-2">
-                              <p className="font-mono text-xs text-gray-600">{p.documento || '—'}</p>
+                              <p className="font-mono text-xs text-gray-600">
+                                {p.documento || '—'}
+                                {p.tipo_titulo === 'complemento' && (
+                                  <span className="ml-1.5 inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold bg-violet-100 text-violet-700">
+                                    por fora
+                                  </span>
+                                )}
+                              </p>
                               {p.referencia && <p className="text-[10px] text-gray-400">{p.referencia}</p>}
                             </td>
                             <td className="px-3 py-2">
@@ -2159,6 +2166,11 @@ export default function ContasPagarPage() {
                           >
                             <td className="px-3 py-2">
                               <span className="font-mono text-xs text-gray-600">{p.documento || p.referencia || `#${p.id}`}</span>
+                              {p.tipo_titulo === 'complemento' && (
+                                <span className="ml-1.5 inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold bg-violet-100 text-violet-700">
+                                  por fora
+                                </span>
+                              )}
                               {isAtual && <span className="ml-2 text-[10px] text-brand-600 font-semibold">← esta</span>}
                             </td>
                             <td className="px-3 py-2">{formatDate(p.data_vencimento)}</td>

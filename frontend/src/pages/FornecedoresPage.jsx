@@ -41,6 +41,7 @@ function RegraModal({ fornecedor, onClose, onSaved }) {
     complemento_base: 'total_faturado',
     complemento_vencimento: 'junto_parcelas',
     complemento_dias: '',
+    complemento_desde: '',
     aliases: '',
     complemento_obs: '',
     ativo: true,
@@ -57,6 +58,7 @@ function RegraModal({ fornecedor, onClose, onSaved }) {
       complemento_base: fornecedor.complemento_base || 'total_faturado',
       complemento_vencimento: fornecedor.complemento_vencimento || 'junto_parcelas',
       complemento_dias: fornecedor.complemento_dias ?? '',
+      complemento_desde: (fornecedor.complemento_desde || '').slice(0, 10),
       aliases: fornecedor.aliases || '',
       complemento_obs: fornecedor.complemento_obs || '',
       ativo: fornecedor.ativo !== false && fornecedor.ativo !== 0,
@@ -79,6 +81,7 @@ function RegraModal({ fornecedor, onClose, onSaved }) {
       complemento_base: form.complemento_base,
       complemento_vencimento: form.complemento_vencimento,
       complemento_dias: form.complemento_dias === '' ? null : parseInt(form.complemento_dias, 10),
+      complemento_desde: form.complemento_desde || null,
       aliases: form.aliases.trim() || null,
       complemento_obs: form.complemento_obs.trim() || null,
       ativo: form.ativo,
@@ -185,6 +188,24 @@ function RegraModal({ fornecedor, onClose, onSaved }) {
               {exemploFator() && (
                 <p className="text-xs text-brand-700 mt-3 bg-brand-50 rounded-lg px-3 py-2">{exemploFator()}</p>
               )}
+            </div>
+          )}
+
+          {/* Data de corte */}
+          {temRegra && (
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">Gerar a partir de</label>
+                <input
+                  type="date"
+                  value={form.complemento_desde}
+                  onChange={(e) => setForm(f => ({ ...f, complemento_desde: e.target.value }))}
+                  className="input-field"
+                />
+                <p className="text-[11px] text-gray-400 mt-1">
+                  Só entradas emitidas desta data em diante geram "por fora". Vazio = de hoje em diante.
+                </p>
+              </div>
             </div>
           )}
 

@@ -41,7 +41,16 @@ function buildContaSnapshot(conta, itens) {
 }
 
 function buildEntradaSnapshot(entrada, itens) {
-  const totalEntrada = toNumber(entrada.total_faturado);
+  // Complementos "por fora" (tipo_titulo='complemento') somam ao total esperado:
+  // a régua da entrada é NF + complementos, nunca só o faturado (F3).
+  const totalComplemento = toNumber(
+    itens.reduce((sum, item) => (
+      item.tipo_titulo === 'complemento' && item.status_conta !== 'cancelado'
+        ? sum + toNumber(item.valor_item)
+        : sum
+    ), 0)
+  );
+  const totalEntrada = toNumber(toNumber(entrada.total_faturado) + totalComplemento);
   const totalTitulado = toNumber(itens.reduce((sum, item) => sum + toNumber(item.valor_item), 0));
   const totalPago = toNumber(
     itens.reduce((sum, item) => {
@@ -64,6 +73,8 @@ function buildEntradaSnapshot(entrada, itens) {
 
   return {
     totalEntrada,
+    totalComplemento,
+    totalEsperado: totalEntrada,
     totalTitulado,
     totalPago,
     saldoSemTitulo,
@@ -183,7 +194,11 @@ async function recalcEntrada(entradaId) {
   if (!entrada) return null;
 
   const itens = await adminDb(ITENS)
-    .select(`${ITENS}.valor_item`, `${CONTAS}.status as status_conta`)
+    .select(
+      `${ITENS}.valor_item`,
+      `${CONTAS}.status as status_conta`,
+      `${CONTAS}.tipo_titulo as tipo_titulo`
+    )
     .leftJoin(CONTAS, `${ITENS}.conta_pagar_id`, `${CONTAS}.id`)
     .where(`${ITENS}.entrada_id`, entradaId);
 
@@ -192,6 +207,8 @@ async function recalcEntrada(entradaId) {
   await adminDb(ENTRADAS)
     .where('id', entradaId)
     .update({
+      total_complemento: snapshot.totalComplemento,
+      total_esperado: snapshot.totalEsperado,
       total_titulado: snapshot.totalTitulado,
       total_pago: snapshot.totalPago,
       saldo_sem_titulo: snapshot.saldoSemTitulo,

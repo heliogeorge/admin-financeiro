@@ -107,15 +107,43 @@ function EditModal({ isOpen, onClose, onSave, entrada }) {
 function PagamentosDropdown({ entradaId, isOpen }) {
   const [detalhe, setDetalhe] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [showCompForm, setShowCompForm] = useState(false);
+  const [compForm, setCompForm] = useState({ valor: '', data_vencimento: '', observacoes: '' });
+  const [savingComp, setSavingComp] = useState(false);
 
-  useEffect(() => {
-    if (!isOpen || !entradaId) { setDetalhe(null); return; }
+  const loadDetalhe = () => {
     setLoading(true);
     entradasApi.get(entradaId)
       .then(res => setDetalhe(res.data))
       .catch(() => toast.error('Erro ao carregar pagamentos'))
       .finally(() => setLoading(false));
-  }, [isOpen, entradaId]);
+  };
+
+  useEffect(() => {
+    if (!isOpen || !entradaId) { setDetalhe(null); setShowCompForm(false); return; }
+    loadDetalhe();
+  }, [isOpen, entradaId]); // eslint-disable-line
+
+  const handleCriarComplemento = async () => {
+    const valor = parseFloat(String(compForm.valor).replace(',', '.'));
+    if (!valor || valor <= 0) { toast.error('Informe o valor do "por fora"'); return; }
+    setSavingComp(true);
+    try {
+      await entradasApi.criarComplemento(entradaId, {
+        valor,
+        data_vencimento: compForm.data_vencimento || undefined,
+        observacoes: compForm.observacoes || null,
+      });
+      toast.success('Complemento "por fora" lançado!');
+      setShowCompForm(false);
+      setCompForm({ valor: '', data_vencimento: '', observacoes: '' });
+      loadDetalhe();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Erro ao lançar complemento');
+    } finally {
+      setSavingComp(false);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -129,17 +157,26 @@ function PagamentosDropdown({ entradaId, isOpen }) {
 
   const rp = detalhe.resumo_pagamento;
   const pagamentos = detalhe.pagamentos || [];
+  const regra = detalhe.fornecedor_regra;
+  const temComplemento = (rp.total_complemento || 0) > 0.01;
+  const pendenteInformar = regra?.complemento_tipo === 'valor_informado' && !temComplemento;
 
   return (
     <tr>
       <td colSpan={11} className="p-0">
         <div className="bg-gray-50 border-t border-b border-gray-200 px-6 py-4">
           {/* Resumo do pagamento */}
-          <div className="flex items-center gap-6 mb-3">
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-2 mb-3">
             <div className="flex items-center gap-2">
               <CircleDollarSign size={16} className="text-gray-400" />
               <span className="text-sm text-gray-600">Total NF: <strong>{formatCurrency(rp.total_entrada)}</strong></span>
             </div>
+            {temComplemento && (
+              <>
+                <span className="text-sm text-violet-700">Por fora: <strong>{formatCurrency(rp.total_complemento)}</strong></span>
+                <span className="text-sm text-gray-700">Esperado: <strong>{formatCurrency(rp.total_esperado)}</strong></span>
+              </>
+            )}
             <span className="text-sm text-brand-600">Titulado: <strong>{formatCurrency(rp.total_titulado)}</strong></span>
             <span className="text-sm text-emerald-600">Pago: <strong>{formatCurrency(rp.total_pago)}</strong></span>
             <span className="text-sm text-amber-600">Pendente: <strong>{formatCurrency(rp.total_pendente)}</strong></span>
@@ -150,7 +187,64 @@ function PagamentosDropdown({ entradaId, isOpen }) {
               Saldo: {formatCurrency(rp.saldo_aberto)}
             </span>
             <span className="text-xs text-gray-400">{rp.qtd_pagas}/{rp.qtd_parcelas} parcelas pagas</span>
+            {pendenteInformar && (
+              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-violet-100 text-violet-700">
+                "por fora" a informar
+              </span>
+            )}
+            <button
+              onClick={() => setShowCompForm(s => !s)}
+              className={`text-xs font-medium px-2.5 py-1 rounded-lg transition-colors ${
+                pendenteInformar
+                  ? 'bg-violet-600 text-white hover:bg-violet-500'
+                  : 'text-violet-700 bg-violet-50 hover:bg-violet-100'
+              }`}
+            >
+              + Lançar "por fora"
+            </button>
           </div>
+
+          {showCompForm && (
+            <div className="flex flex-wrap items-end gap-3 mb-3 p-3 rounded-lg border border-violet-200 bg-violet-50/50">
+              <div>
+                <label className="block text-[11px] text-gray-500 mb-0.5">Valor *</label>
+                <input
+                  type="number" step="0.01" min="0" autoFocus
+                  value={compForm.valor}
+                  onChange={(e) => setCompForm(f => ({ ...f, valor: e.target.value }))}
+                  className="input-field w-32 py-1.5 text-sm text-right"
+                  placeholder="0,00"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] text-gray-500 mb-0.5">Vencimento</label>
+                <input
+                  type="date"
+                  value={compForm.data_vencimento}
+                  onChange={(e) => setCompForm(f => ({ ...f, data_vencimento: e.target.value }))}
+                  className="input-field w-40 py-1.5 text-sm"
+                />
+              </div>
+              <div className="flex-1 min-w-[180px]">
+                <label className="block text-[11px] text-gray-500 mb-0.5">Observações</label>
+                <input
+                  type="text"
+                  value={compForm.observacoes}
+                  onChange={(e) => setCompForm(f => ({ ...f, observacoes: e.target.value }))}
+                  className="input-field py-1.5 text-sm"
+                  placeholder="Ex.: combinado por telefone"
+                />
+              </div>
+              <button
+                onClick={handleCriarComplemento}
+                disabled={savingComp}
+                className="btn-primary py-1.5 text-sm disabled:opacity-50"
+              >
+                {savingComp ? 'Salvando...' : 'Confirmar'}
+              </button>
+              <button onClick={() => setShowCompForm(false)} className="btn-secondary py-1.5 text-sm">Cancelar</button>
+            </div>
+          )}
 
           {pagamentos.length === 0 ? (
             <p className="text-sm text-gray-400 italic">Nenhuma conta vinculada a esta entrada.</p>
@@ -172,6 +266,11 @@ function PagamentosDropdown({ entradaId, isOpen }) {
                     <tr key={i} className="border-b border-gray-50 last:border-0">
                       <td className="px-3 py-2 text-xs">
                         <span className="font-mono text-gray-600">{p.documento || p.erp_lancamento || '—'}</span>
+                        {p.tipo_titulo === 'complemento' && (
+                          <span className="ml-1.5 inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold bg-violet-100 text-violet-700">
+                            por fora
+                          </span>
+                        )}
                         {p.historico && <span className="text-gray-400 ml-1 truncate">{p.historico}</span>}
                       </td>
                       <td className="px-3 py-2 text-xs text-gray-500">{formatDate(p.data_vencimento)}</td>

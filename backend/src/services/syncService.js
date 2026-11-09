@@ -408,7 +408,16 @@ const SyncService = {
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
     console.log(`✅ Sync Entradas em ${elapsed}s: ${stats.inserted} novos | ${stats.updated} atualizados | ${stats.repairedStore} lojas corrigidas | ${stats.unchanged} sem mudança`);
 
-    return { ...stats, elapsed: parseFloat(elapsed), timestamp: new Date().toISOString() };
+    // F3: gera complementos "por fora" das entradas novas (regra por fornecedor)
+    let complementos = null;
+    try {
+      const { gerarComplementosPendentes } = require('./complementosService');
+      complementos = await gerarComplementosPendentes({ username });
+    } catch (err) {
+      console.error('❌ Erro ao gerar complementos:', err.message);
+    }
+
+    return { ...stats, complementos, elapsed: parseFloat(elapsed), timestamp: new Date().toISOString() };
   },
 
   /**

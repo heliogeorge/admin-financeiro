@@ -182,6 +182,8 @@ export const syncApi = {
 };
 
 export const entradasApi = {
+  criarComplemento: (id, data) => api.post(`/entradas/${id}/complemento`, data),
+  gerarComplementos: () => api.post('/entradas/gerar-complementos'),
   list: (params) => api.get('/entradas', { params }),
   resumo: (params) => api.get('/entradas/resumo', { params }),
   get: (id) => api.get(`/entradas/${id}`),
