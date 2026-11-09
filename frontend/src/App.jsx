@@ -5,6 +5,7 @@ import AppLayout from './components/layout/AppLayout';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
 import ContasPagarPage from './pages/ContasPagarPage';
+import FornecedoresPage from './pages/FornecedoresPage';
 import EntradasPage from './pages/EntradasPage';
 import ChequesPage from './pages/ChequesPage';
 import VinculosPage from './pages/VinculosPage';
@@ -32,6 +33,7 @@ function App() {
           <Route path="/" element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
             <Route index element={<DashboardPage />} />
             <Route path="contas-pagar" element={<ContasPagarPage />} />
+            <Route path="fornecedores" element={<FornecedoresPage />} />
             <Route path="entradas" element={<EntradasPage />} />
             <Route path="cheques" element={<ChequesPage />} />
             <Route path="compras/*" element={<ComprasPage />} />

@@ -132,6 +132,13 @@ export const contasBancariasApi = {
   extratos: (id, params) => api.get(`/contas-bancarias/${id}/extratos`, { params }),
 };
 
+export const fornecedoresApi = {
+  list: (params) => api.get('/fornecedores', { params }),
+  get: (id) => api.get(`/fornecedores/${id}`),
+  update: (id, data) => api.put(`/fornecedores/${id}`, data),
+  sync: () => api.post('/fornecedores/sync'),
+};
+
 export const fornecedorRegrasApi = {
   list: (params) => api.get('/fornecedor-regras', { params }),
   create: (data) => api.post('/fornecedor-regras', data),

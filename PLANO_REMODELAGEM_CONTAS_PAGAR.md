@@ -161,15 +161,20 @@ Ainda a responder:
   são 2 boletos").
 - Nenhuma mudança de schema. Validado nos dados reais (NF-044620 = 2/2 pago).
 
-### F2 — Cadastro de Fornecedores (espelho do ERP)
-- Migration: tabela `fornecedores` (4.1).
-- Sync: passo novo no `syncService` lendo o `CADFOR` (upsert por `codiforn`, só
-  campos-base; regras do app preservadas) — mesma mecânica das entradas/contas.
-- Backend: CRUD `/api/fornecedores` (edita só os campos de regra) + busca.
-- Frontend: página "Fornecedores" (lista espelhada + form da regra em linguagem
-  clara: "cobra fator 0,30 sobre a NF, por depósito, vencendo junto dos boletos").
-- `contas_pagar.fornecedor_id` e `tipo_titulo` entram nesta migration
-  (backfill: tudo vira `duplicata`; `fornecedor_id` via codiforn).
+### F2 — Cadastro de Fornecedores (espelho do ERP) ✅ FEITA 09/11/2026
+- Migration `20261109000001`: tabela `fornecedores` (4.1) + `tipo_titulo`
+  (default `duplicata`) e `fornecedor_id` em `contas_pagar`.
+- Sync próprio (`fornecedoresService.syncFornecedores`, `POST /api/fornecedores/sync`):
+  upsert por `codiforn` só dos campos-base (regras preservadas) + backfill de
+  `contas_pagar.fornecedor_id` via codiforn. Primeira carga: 542 fornecedores,
+  691 contas vinculadas.
+- Backend: `/api/fornecedores` (lista com busca/filtro "com regra" + saldo em
+  aberto por fornecedor; PUT edita só os campos de regra).
+- Frontend: página "Fornecedores" no menu — chip da regra em linguagem clara
+  ("+30% sobre a NF · junto com os boletos") e modal com percentual, exemplo
+  calculado, vencimento e aliases.
+- Obs.: Villaggio tem 3 cadastros no ERP (64/224/424); o 64 é o que tem contas.
+  Regras reais (fatores por fornecedor) ainda a cadastrar — pergunta F0.
 
 ### F3 — Complementos ("por fora")
 - Migration: `total_complemento`/`total_esperado` na entrada.

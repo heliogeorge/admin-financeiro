@@ -6,11 +6,13 @@ import {
   ChevronLeft, LogOut, Building2, Settings,
   ShoppingCart, ClipboardList, Plus, PackageSearch, Lightbulb,
   WalletCards, SlidersHorizontal, BarChart3, Tags, FolderArchive,
+  Truck,
 } from 'lucide-react';
 
 const navItems = [
   { to: '/', icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/contas-pagar', icon: FileText, label: 'Contas a Pagar' },
+  { to: '/fornecedores', icon: Truck, label: 'Fornecedores' },
   { to: '/entradas', icon: Package, label: 'Entradas' },
   { to: '/cheques', icon: BookOpen, label: 'Cheques' },
   {
