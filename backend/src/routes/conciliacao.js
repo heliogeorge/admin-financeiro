@@ -7,6 +7,7 @@ const { parseOfx } = require('../services/ofxService');
 const { guessBankFromCode } = require('../services/ddaService');
 const { recalcContaDependencies, toNumber } = require('../services/reconciliationService');
 const { calcJurosMultaAuto } = require('../services/baixasService');
+const { recalcExtrato, TOLERANCIA_EXTRATO } = require('../services/extratoConciliacaoService');
 
 const CONTAS = 'contas_pagar';
 const BAIXAS = 'contas_pagar_baixas';
@@ -224,18 +225,123 @@ router.post('/extratos/:id/conciliar', authMiddleware, async (req, res, next) =>
       banco_baixa: null,
       origem: isMp ? 'mercadopago' : 'ofx',
       referencia_externa: extrato.fit_id,
+      extrato_id: extrato.id,
       observacoes: `Conciliado via ${isMp ? 'MercadoPago' : 'OFX'}: ${extrato.descricao || ''}`,
       criado_por: req.user.username,
       atualizado_por: req.user.username,
     });
 
-    await adminDb(EXTRATOS).where('id', req.params.id).update({
-      status: 'conciliado',
-      baixa_id: baixaId,
-    });
-
+    await recalcExtrato(extrato.id);
     await recalcContaDependencies(conta.id);
     res.json({ ok: true, baixa_id: baixaId });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/conciliacao/extratos/:id/conciliar-lote
+ * Um extrato (depósito/PIX/TED) quita VÁRIAS contas de uma vez — caso típico:
+ * o depósito mensal do "por fora" junta complementos de várias notas.
+ * Body: { itens: [{ conta_pagar_id, valor_pago, valor_juros, valor_multa,
+ *                   valor_desconto }, ...] }
+ * A soma dos valor_pago deve bater com o valor do extrato (tolerância de
+ * centavos). Cria uma baixa por conta, todas ligadas ao extrato.
+ */
+router.post('/extratos/:id/conciliar-lote', authMiddleware, async (req, res, next) => {
+  try {
+    const itens = Array.isArray(req.body?.itens) ? req.body.itens : [];
+    if (itens.length === 0) return res.status(400).json({ error: 'Informe as contas do lote.' });
+
+    const extrato = await adminDb(EXTRATOS).where('id', req.params.id).first();
+    if (!extrato) return res.status(404).json({ error: 'Extrato não encontrado' });
+    if (extrato.status === 'conciliado') return res.status(400).json({ error: 'Extrato já conciliado' });
+    if (extrato.status === 'ignorado') return res.status(400).json({ error: 'Extrato está ignorado' });
+    if (extrato.tipo !== 'debito') return res.status(400).json({ error: 'Apenas débitos podem gerar baixas.' });
+
+    const valorExtrato = toNumber(extrato.valor);
+
+    // soma do que JÁ está baixado neste extrato (lote pode complementar)
+    const jaBaixado = await adminDb(BAIXAS)
+      .where('extrato_id', extrato.id)
+      .where('estornada', false)
+      .sum('valor_pago as total')
+      .first();
+    const disponivel = toNumber(valorExtrato - toNumber(jaBaixado.total));
+
+    const normalizados = [];
+    let somaLote = 0;
+    for (const item of itens) {
+      const contaId = parseInt(item.conta_pagar_id, 10);
+      const valorPago = toNumber(item.valor_pago);
+      const juros = Math.max(0, toNumber(item.valor_juros || 0));
+      const multa = Math.max(0, toNumber(item.valor_multa || 0));
+      const desconto = Math.max(0, toNumber(item.valor_desconto || 0));
+      if (!contaId || valorPago <= 0) {
+        return res.status(400).json({ error: 'Cada item precisa de conta_pagar_id e valor_pago > 0.' });
+      }
+      if (juros + multa > valorPago) {
+        return res.status(400).json({ error: `Juros + multa excedem o valor pago da conta ${contaId}.` });
+      }
+      if (normalizados.some((n) => n.contaId === contaId)) {
+        return res.status(400).json({ error: `Conta ${contaId} repetida no lote.` });
+      }
+      somaLote = toNumber(somaLote + valorPago);
+      normalizados.push({ contaId, valorPago, juros, multa, desconto });
+    }
+
+    if (Math.abs(somaLote - disponivel) > TOLERANCIA_EXTRATO) {
+      return res.status(400).json({
+        error: `A soma do lote (${somaLote.toFixed(2)}) difere do valor disponível do extrato (${disponivel.toFixed(2)}).`,
+      });
+    }
+
+    const contas = await adminDb(CONTAS).whereIn('id', normalizados.map((n) => n.contaId));
+    const contasMap = new Map(contas.map((c) => [c.id, c]));
+    for (const n of normalizados) {
+      const conta = contasMap.get(n.contaId);
+      if (!conta) return res.status(404).json({ error: `Conta ${n.contaId} não encontrada.` });
+      if (conta.status === 'cancelado' || conta.status === 'pago') {
+        return res.status(400).json({ error: `Conta ${n.contaId} (${conta.fornecedor}) está ${conta.status}.` });
+      }
+    }
+
+    const isMp = (extrato.fit_id || '').startsWith('mp-');
+    const baixaIds = [];
+    await adminDb.transaction(async (trx) => {
+      for (const n of normalizados) {
+        const [baixaId] = await trx(BAIXAS).insert({
+          conta_pagar_id: n.contaId,
+          data_pagamento: extrato.data_transacao,
+          valor_pago: n.valorPago,
+          valor_desconto: n.desconto,
+          valor_juros: n.juros,
+          valor_multa: n.multa,
+          forma_pagamento: isMp ? 'mercadopago' : 'ofx',
+          conta_bancaria_id: extrato.conta_bancaria_id,
+          banco_baixa: null,
+          origem: 'lote',
+          referencia_externa: extrato.fit_id,
+          extrato_id: extrato.id,
+          observacoes: `Baixa em lote (${itens.length} contas) via conciliação: ${extrato.descricao || ''}`,
+          criado_por: req.user.username,
+          atualizado_por: req.user.username,
+        });
+        baixaIds.push(baixaId);
+      }
+    });
+
+    const statusExtrato = await recalcExtrato(extrato.id);
+    for (const n of normalizados) {
+      await recalcContaDependencies(n.contaId);
+    }
+
+    res.status(201).json({
+      ok: true,
+      baixa_ids: baixaIds,
+      status_extrato: statusExtrato,
+      contas_baixadas: normalizados.length,
+    });
   } catch (err) {
     next(err);
   }
@@ -301,17 +407,14 @@ router.post('/extratos/:id/criar-conta', authMiddleware, async (req, res, next) 
         banco_baixa: null,
         origem: isMp ? 'mercadopago' : 'ofx',
         referencia_externa: extrato.fit_id,
+        extrato_id: extrato.id,
         observacoes: `Conta criada e baixada na conciliação: ${extrato.descricao || ''}`,
         criado_por: req.user.username,
         atualizado_por: req.user.username,
       });
-
-      await trx(EXTRATOS).where('id', extrato.id).update({
-        status: 'conciliado',
-        baixa_id: baixaId,
-      });
     });
 
+    await recalcExtrato(extrato.id);
     await recalcContaDependencies(contaId);
     const conta = await adminDb(CONTAS).where('id', contaId).first();
     res.status(201).json({ ok: true, conta, baixa_id: baixaId });
@@ -499,12 +602,112 @@ router.get('/extrato-conta/:contaId', async (req, res, next) => {
 });
 
 /**
+ * Subset-sum em centavos: menor conjunto de contas cuja soma dos saldos bate
+ * com o alvo (± tolerância). DP limitada para não explodir.
+ */
+function encontrarCombinacao(contas, alvo, tolerancia) {
+  const alvoC = Math.round(alvo * 100);
+  const tolC = Math.round(tolerancia * 100);
+  let dp = new Map([[0, []]]);
+  for (let i = 0; i < contas.length; i++) {
+    const v = Math.round(toNumber(contas[i].saldo_aberto) * 100);
+    if (v <= 0) continue;
+    const next = new Map(dp);
+    for (const [s, idxs] of dp) {
+      const ns = s + v;
+      if (ns > alvoC + tolC) continue;
+      const atual = next.get(ns);
+      if (!atual || atual.length > idxs.length + 1) next.set(ns, [...idxs, i]);
+    }
+    dp = next;
+    if (dp.size > 20000) break; // guarda contra explosão
+  }
+  let best = null;
+  for (const [s, idxs] of dp) {
+    if (idxs.length === 0) continue;
+    if (Math.abs(s - alvoC) <= tolC && (!best || idxs.length < best.idxs.length)) {
+      best = { s, idxs };
+    }
+  }
+  if (!best) return null;
+  return { contas: best.idxs.map((i) => contas[i]), soma: best.s / 100 };
+}
+
+const CAMPOS_CONTA_COMBO = [
+  'id', 'fornecedor', 'erp_fornecedor_id', 'documento', 'referencia', 'tipo_titulo',
+  'data_vencimento', 'valor', 'valor_pago', 'saldo_aberto', 'status', 'codiloja', 'descricao',
+];
+
+async function contasAbertasDoFornecedor(f) {
+  return adminDb(CONTAS)
+    .whereIn('status', ['pendente', 'vencido'])
+    .where('saldo_aberto', '>', 0.01)
+    .where((b) => {
+      b.where('fornecedor_id', f.id);
+      if (f.codiforn) b.orWhere('erp_fornecedor_id', String(f.codiforn));
+    })
+    .orderBy('data_vencimento', 'asc')
+    .limit(30)
+    .select(CAMPOS_CONTA_COMBO);
+}
+
+/**
+ * Depósito/PIX que junta várias contas (caso "por fora" mensal): acha os
+ * fornecedores citados na descrição (nome/aliases do cadastro) e tenta a
+ * combinação de contas em aberto cuja soma bate com o valor do extrato.
+ */
+async function buscarCombinacoes(extrato, valor, fornecedorIdForcado = null) {
+  const resultado = { combinacoes: [], contas_fornecedor: [], fornecedor: null };
+
+  let candidatos = [];
+  if (fornecedorIdForcado) {
+    const f = await adminDb('fornecedores').where('id', fornecedorIdForcado).first();
+    if (f) candidatos = [f];
+  } else {
+    const desc = String(extrato.descricao || '').toUpperCase();
+    if (desc.length >= 4) {
+      const fornecedores = await adminDb('fornecedores')
+        .where('ativo', true)
+        .select('id', 'codiforn', 'nome', 'aliases');
+      candidatos = fornecedores.filter((f) => {
+        const nomes = [f.nome, ...String(f.aliases || '').split(/\r?\n/)]
+          .map((s) => String(s || '').trim().toUpperCase())
+          .filter((s) => s.length >= 4);
+        return nomes.some((n) => desc.includes(n));
+      }).slice(0, 3);
+    }
+  }
+
+  for (const f of candidatos) {
+    const contas = await contasAbertasDoFornecedor(f);
+    if (fornecedorIdForcado) {
+      resultado.fornecedor = { id: f.id, nome: f.nome, codiforn: f.codiforn };
+      resultado.contas_fornecedor = contas;
+    }
+    if (contas.length === 0) continue;
+    const combo = encontrarCombinacao(contas, valor, TOLERANCIA_EXTRATO);
+    if (combo && combo.contas.length > 0) {
+      resultado.combinacoes.push({
+        fornecedor: { id: f.id, nome: f.nome, codiforn: f.codiforn },
+        contas: combo.contas,
+        soma: toNumber(combo.soma),
+        diferenca: toNumber(valor - combo.soma),
+      });
+    }
+  }
+
+  return resultado;
+}
+
+/**
  * GET /api/conciliacao/sugestoes/:extratoId
  * Busca contas a pagar candidatas para um extrato. Sem ?search, janela de
  * valor que acomoda juros/multa (pagou a mais) e desconto (pagou a menos);
  * com ?search, busca livre por fornecedor/descrição. Cada candidata vem com
  * a diferença e a decomposição sugerida (juros/multa pela regra do
- * fornecedor, ou desconto).
+ * fornecedor, ou desconto). Com ?fornecedor_id, devolve também as contas em
+ * aberto do fornecedor (p/ baixa em lote). `combinacoes` traz conjuntos de
+ * contas cuja soma bate com o valor (depósito que junta várias notas).
  */
 router.get('/sugestoes/:extratoId', async (req, res, next) => {
   try {
@@ -596,10 +799,28 @@ router.get('/sugestoes/:extratoId', async (req, res, next) => {
       return { ...c, diferenca, sugestao_decomposicao: sugestao };
     }));
 
-    res.json({ extrato, sugestoes: candidatas });
+    // F4: combinações para depósito que junta várias contas
+    let lote = { combinacoes: [], contas_fornecedor: [], fornecedor: null };
+    if (extrato.tipo === 'debito' && extrato.status !== 'conciliado') {
+      try {
+        lote = await buscarCombinacoes(extrato, valor, req.query.fornecedor_id || null);
+      } catch (err) {
+        console.error('Erro nas combinações de lote:', err.message);
+      }
+    }
+
+    res.json({
+      extrato,
+      sugestoes: candidatas,
+      combinacoes: lote.combinacoes,
+      contas_fornecedor: lote.contas_fornecedor,
+      fornecedor_lote: lote.fornecedor,
+    });
   } catch (err) {
     next(err);
   }
 });
 
 module.exports = router;
+// exportada para testes (função pura de subset-sum)
+module.exports.encontrarCombinacao = encontrarCombinacao;

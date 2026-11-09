@@ -201,7 +201,13 @@ rateio, vencimentos junto dos boletos e `total_esperado` — e foi revertido
 - `reconciliationService` passa a medir contra `total_esperado`.
 - Telas de entrada: resumo mostra NF + complemento = total esperado.
 
-### F4 — Conciliação de pagamentos sem boleto + baixa em lote
+### F4 — Conciliação de pagamentos sem boleto + baixa em lote ✅ FEITA 09/11/2026
+Implementada conforme abaixo: migration `20261109000003` (backfill 15/15),
+status do extrato derivado das baixas (pendente/parcial/conciliado/divergente,
+estorno reverte), `conciliar-lote` transacional, sugestões com combinação
+subset-sum por fornecedor (nome/aliases na descrição ou seleção manual) e aba
+"Lote (várias contas)" no modal de conciliação. Baixa automática em lote NÃO
+ligada (decisão adiada, como planejado).
 - Migration: `contas_pagar_baixas.extrato_id` + backfill a partir de
   `extratos_bancarios.baixa_id` (4.5).
 - Backend: `POST /conciliacao/extratos/:id/conciliar-lote` — recebe

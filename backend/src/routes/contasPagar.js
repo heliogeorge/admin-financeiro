@@ -16,6 +16,7 @@ const {
 } = require('../services/baixaDocumentosService');
 const { hasTable, getExistingColumns, pickExistingFields } = require('../services/schemaCompatService');
 const { listTitulos, buildTituloDaConta } = require('../services/titulosService');
+const { recalcExtrato } = require('../services/extratoConciliacaoService');
 
 const TABLE = 'contas_pagar';
 const ITENS = 'contas_pagar_itens';
@@ -791,6 +792,11 @@ router.put('/:id/baixas/:baixaId', authMiddleware, upload.single('comprovante'),
     updates.atualizado_por = req.user.username;
     await adminDb(BAIXAS).where('id', req.params.baixaId).update(updates);
 
+    // valor da baixa mudou → status do extrato ligado pode mudar
+    if (baixa.extrato_id && updates.valor_pago !== undefined) {
+      await recalcExtrato(baixa.extrato_id);
+    }
+
     await recalcContaDependencies(req.params.id);
     const updated = await buildContaDetalhe(req.params.id);
     res.json(updated);
@@ -824,6 +830,15 @@ router.delete('/:id/baixas/:baixaId', authMiddleware, async (req, res, next) => 
           estorno_motivo: req.body?.motivo || null,
           atualizado_por: req.user.username,
         });
+    }
+
+    // extrato ligado à baixa volta a pendente/parcial
+    if (baixa.extrato_id) {
+      await recalcExtrato(baixa.extrato_id);
+    } else {
+      const extratoLegado = await adminDb('extratos_bancarios')
+        .where('baixa_id', req.params.baixaId).first('id');
+      if (extratoLegado) await recalcExtrato(extratoLegado.id);
     }
 
     await recalcContaDependencies(req.params.id);

@@ -722,11 +722,15 @@ async function autoConciliarMp({ username = 'auto-mp' } = {}) {
         banco_baixa: null,
         origem: 'mercadopago',
         referencia_externa: extrato.fit_id,
+        extrato_id: extrato.id,
         observacoes: `Baixa automática MercadoPago: ${extrato.descricao || ''} (DDA #${best.id} ${best.cedente_nome || ''})`,
         criado_por: username,
         atualizado_por: username,
       });
       await recalcContaDependencies(conta.id);
+    }
+    if (jaBaixado && !jaBaixado.extrato_id) {
+      await adminDb(BAIXAS).where('id', baixaId).update({ extrato_id: extrato.id });
     }
     baixados.push({
       extrato_id: extrato.id,

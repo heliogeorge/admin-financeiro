@@ -157,6 +157,8 @@ export const conciliacaoApi = {
   extratos: (params) => api.get('/conciliacao/extratos', { params }),
   conciliar: (extratoId, data) =>
     api.post(`/conciliacao/extratos/${extratoId}/conciliar`, data),
+  conciliarLote: (extratoId, itens) =>
+    api.post(`/conciliacao/extratos/${extratoId}/conciliar-lote`, { itens }),
   criarConta: (extratoId, data) =>
     api.post(`/conciliacao/extratos/${extratoId}/criar-conta`, data),
   ignorar: (extratoId) => api.post(`/conciliacao/extratos/${extratoId}/ignorar`),

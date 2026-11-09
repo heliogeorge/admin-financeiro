@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
 import {
   contasBancariasApi, fornecedorRegrasApi, conciliacaoApi, mpApi, bbApi, planoContasApi,
+  fornecedoresApi,
 } from '../lib/api';
 import { formatCurrency, formatDate } from '../lib/utils';
 import {
   Plus, X, Pencil, Trash2, RefreshCw, Upload, Check,
-  Landmark, Percent, FileText, Link2, Search, ScrollText,
+  Landmark, Percent, FileText, Link2, Search, ScrollText, Layers,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import LojaSelect from '../components/LojaSelect';
@@ -476,6 +477,15 @@ function ConciliarModal({ extrato, onClose, onDone }) {
   const [selecionada, setSelecionada] = useState(null);
   const [decomp, setDecomp] = useState({ valor_juros: 0, valor_multa: 0, valor_desconto: 0 });
 
+  // --- lote (1 depósito → N contas) ---
+  const [combinacoes, setCombinacoes] = useState([]);
+  const [loteItens, setLoteItens] = useState([]); // [{ conta, valor_pago }]
+  const [fornBusca, setFornBusca] = useState('');
+  const [fornOpcoes, setFornOpcoes] = useState([]);
+  const [fornLote, setFornLote] = useState(null);
+  const [contasFornecedor, setContasFornecedor] = useState([]);
+  const [loadingLote, setLoadingLote] = useState(false);
+
   // --- criar ---
   const [form, setForm] = useState({
     fornecedor: guessFornecedor(extrato.descricao),
@@ -493,9 +503,72 @@ function ConciliarModal({ extrato, onClose, onDone }) {
     try {
       const res = await conciliacaoApi.sugestoes(extrato.id, termo ? { search: termo } : undefined);
       setSugestoes(res.data.sugestoes || []);
+      if (!termo) setCombinacoes(res.data.combinacoes || []);
       setBuscou(Boolean(termo));
     } catch { toast.error('Erro ao buscar sugestões'); }
     finally { setLoadingSug(false); }
+  };
+
+  const buscarFornecedores = async (e) => {
+    e?.preventDefault?.();
+    if (!fornBusca.trim()) return;
+    setLoadingLote(true);
+    try {
+      const res = await fornecedoresApi.list({ q: fornBusca.trim(), perPage: 8 });
+      setFornOpcoes(res.data.data || []);
+    } catch { toast.error('Erro ao buscar fornecedores'); }
+    finally { setLoadingLote(false); }
+  };
+
+  const selecionarFornecedorLote = async (f) => {
+    setLoadingLote(true);
+    setFornOpcoes([]);
+    try {
+      const res = await conciliacaoApi.sugestoes(extrato.id, { fornecedor_id: f.id });
+      setFornLote(res.data.fornecedor_lote || { id: f.id, nome: f.nome });
+      setContasFornecedor(res.data.contas_fornecedor || []);
+      if ((res.data.contas_fornecedor || []).length === 0) {
+        toast(`${f.nome} não tem contas em aberto`, { icon: '📋' });
+      }
+    } catch { toast.error('Erro ao carregar contas do fornecedor'); }
+    finally { setLoadingLote(false); }
+  };
+
+  const toggleLoteConta = (conta) => {
+    setLoteItens((prev) => {
+      if (prev.some((i) => i.conta.id === conta.id)) {
+        return prev.filter((i) => i.conta.id !== conta.id);
+      }
+      return [...prev, { conta, valor_pago: (parseFloat(conta.saldo_aberto) || 0).toFixed(2) }];
+    });
+  };
+
+  const usarCombinacao = (combo) => {
+    setFornLote(combo.fornecedor);
+    setLoteItens(combo.contas.map((c) => ({
+      conta: c,
+      valor_pago: (parseFloat(c.saldo_aberto) || 0).toFixed(2),
+    })));
+    setContasFornecedor(combo.contas);
+    setTab('lote');
+  };
+
+  const somaLote = loteItens.reduce((s, i) => s + (parseFloat(i.valor_pago) || 0), 0);
+  const difLote = (parseFloat(extrato.valor) || 0) - somaLote;
+  const loteOk = loteItens.length > 0 && Math.abs(difLote) <= 0.05;
+
+  const handleConciliarLote = async () => {
+    if (!loteOk) return;
+    setSalvando(true);
+    try {
+      const res = await conciliacaoApi.conciliarLote(extrato.id, loteItens.map((i) => ({
+        conta_pagar_id: i.conta.id,
+        valor_pago: parseFloat(i.valor_pago) || 0,
+      })));
+      toast.success(`${res.data.contas_baixadas} contas baixadas com um pagamento`);
+      onDone();
+    } catch (err) { toast.error(err.response?.data?.error || 'Erro na baixa em lote'); }
+    finally { setSalvando(false); }
   };
 
   useEffect(() => { fetchSugestoes(); }, [extrato.id]);
@@ -576,6 +649,15 @@ function ConciliarModal({ extrato, onClose, onDone }) {
           <button onClick={() => setTab('vincular')}
             className={`px-4 py-2.5 text-sm font-medium border-b-2 ${tab === 'vincular' ? 'border-brand-600 text-brand-700' : 'border-transparent text-gray-500'}`}>
             <Link2 size={14} className="inline mr-1" /> Vincular a conta existente
+          </button>
+          <button onClick={() => setTab('lote')}
+            className={`px-4 py-2.5 text-sm font-medium border-b-2 ${tab === 'lote' ? 'border-brand-600 text-brand-700' : 'border-transparent text-gray-500'}`}>
+            <Layers size={14} className="inline mr-1" /> Lote (várias contas)
+            {combinacoes.length > 0 && (
+              <span className="ml-1.5 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-violet-600 text-white text-[10px] font-bold">
+                {combinacoes.length}
+              </span>
+            )}
           </button>
           <button onClick={() => setTab('criar')}
             className={`px-4 py-2.5 text-sm font-medium border-b-2 ${tab === 'criar' ? 'border-brand-600 text-brand-700' : 'border-transparent text-gray-500'}`}>
@@ -668,6 +750,123 @@ function ConciliarModal({ extrato, onClose, onDone }) {
               <button type="button" onClick={onClose} className="btn-secondary">Cancelar</button>
               <button type="button" onClick={handleVincular} disabled={!selecionada || salvando} className="btn-primary disabled:opacity-50">
                 <Check size={15} /> {salvando ? 'Conciliando...' : 'Conciliar'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {tab === 'lote' && (
+          <div className="p-5 space-y-4">
+            <p className="text-xs text-gray-500">
+              Um pagamento quitando <strong>várias contas</strong> de uma vez — ex.: o depósito do
+              "por fora" que junta os complementos de várias notas do mês.
+            </p>
+
+            {/* Sugestões de combinação */}
+            {combinacoes.length > 0 && loteItens.length === 0 && (
+              <div className="space-y-2">
+                {combinacoes.map((combo, i) => (
+                  <div key={i} className="flex items-center justify-between gap-3 p-3 rounded-xl border border-violet-200 bg-violet-50/50">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-violet-900">
+                        {combo.contas.length} conta{combo.contas.length > 1 ? 's' : ''} de {combo.fornecedor.nome} somam {formatCurrency(combo.soma)}
+                      </p>
+                      <p className="text-xs text-violet-700 truncate">
+                        {combo.contas.map((c) => `${c.referencia || c.documento || `#${c.id}`} (${formatCurrency(c.saldo_aberto)})`).join(' + ')}
+                      </p>
+                    </div>
+                    <button onClick={() => usarCombinacao(combo)} className="btn-primary py-1.5 text-xs whitespace-nowrap">
+                      Usar sugestão
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Busca de fornecedor */}
+            <form className="flex gap-2" onSubmit={buscarFornecedores}>
+              <input value={fornBusca} onChange={(e) => setFornBusca(e.target.value)}
+                placeholder="Buscar fornecedor para listar as contas em aberto..." className="input-field flex-1" />
+              <button type="submit" className="btn-secondary" disabled={loadingLote}>
+                <Search size={15} /> Buscar
+              </button>
+            </form>
+            {fornOpcoes.length > 0 && (
+              <div className="divide-y divide-gray-50 border border-gray-100 rounded-lg">
+                {fornOpcoes.map((f) => (
+                  <button key={f.id} onClick={() => selecionarFornecedorLote(f)}
+                    className="w-full flex items-center justify-between p-2.5 text-left hover:bg-gray-50">
+                    <span className="text-sm text-gray-800">{f.nome} <span className="text-xs text-gray-400 font-mono">#{f.codiforn}</span></span>
+                    {f.contas_abertas > 0 && (
+                      <span className="text-xs text-amber-700">{f.contas_abertas} em aberto · {formatCurrency(f.saldo_aberto)}</span>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Contas do fornecedor selecionado */}
+            {loadingLote ? (
+              <p className="text-sm text-gray-400 py-4 text-center">
+                <RefreshCw size={15} className="animate-spin inline mr-2" />Carregando...
+              </p>
+            ) : (fornLote && contasFornecedor.length > 0) && (
+              <div>
+                <p className="text-xs font-semibold text-gray-600 uppercase mb-2">
+                  Contas em aberto — {fornLote.nome}
+                </p>
+                <div className="divide-y divide-gray-50 border border-gray-100 rounded-lg max-h-56 overflow-y-auto">
+                  {contasFornecedor.map((c) => {
+                    const item = loteItens.find((i) => i.conta.id === c.id);
+                    return (
+                      <div key={c.id}
+                        className={`flex items-center gap-3 p-2.5 ${item ? 'bg-violet-50/50' : 'hover:bg-gray-50'}`}>
+                        <input type="checkbox" checked={!!item} onChange={() => toggleLoteConta(c)}
+                          className="rounded border-gray-300 text-violet-600 focus:ring-violet-500" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-gray-800 truncate">
+                            <span className="font-mono text-xs">{c.referencia || c.documento || `#${c.id}`}</span>
+                            {c.tipo_titulo === 'complemento' && (
+                              <span className="ml-1.5 inline-block px-1.5 py-0.5 rounded text-[10px] font-semibold bg-violet-100 text-violet-700">por fora</span>
+                            )}
+                          </p>
+                          <p className="text-xs text-gray-400">venc {formatDate(c.data_vencimento)} · saldo {formatCurrency(c.saldo_aberto)}</p>
+                        </div>
+                        {item && (
+                          <input type="number" step="0.01" min="0" value={item.valor_pago}
+                            onChange={(e) => setLoteItens((prev) => prev.map((i) => (
+                              i.conta.id === c.id ? { ...i, valor_pago: e.target.value } : i
+                            )))}
+                            className="input-field w-28 py-1 text-right text-sm" />
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Totalizador */}
+            {loteItens.length > 0 && (
+              <div className={`flex items-center justify-between p-3 rounded-xl text-sm ${loteOk ? 'bg-emerald-50 border border-emerald-100' : 'bg-amber-50 border border-amber-100'}`}>
+                <span className="text-gray-600">
+                  {loteItens.length} conta{loteItens.length > 1 ? 's' : ''} · soma <strong>{formatCurrency(somaLote)}</strong> de {formatCurrency(extrato.valor)}
+                </span>
+                {loteOk ? (
+                  <span className="text-emerald-700 font-semibold flex items-center gap-1"><Check size={14} /> Valores conferem</span>
+                ) : (
+                  <span className="text-amber-700 font-semibold">
+                    {difLote > 0 ? `Faltam ${formatCurrency(difLote)}` : `${formatCurrency(-difLote)} a mais`}
+                  </span>
+                )}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={onClose} className="btn-secondary">Cancelar</button>
+              <button type="button" onClick={handleConciliarLote} disabled={!loteOk || salvando}
+                className="btn-primary disabled:opacity-50">
+                <Check size={15} /> {salvando ? 'Baixando...' : `Baixar ${loteItens.length || ''} conta${loteItens.length > 1 ? 's' : ''} com este pagamento`}
               </button>
             </div>
           </div>
@@ -905,6 +1104,7 @@ function ConciliacaoTab() {
         </select>
         <select value={status} onChange={(e) => setStatus(e.target.value)} className="input-field w-40">
           <option value="pendente">Pendentes</option>
+          <option value="parcial">Parciais</option>
           <option value="conciliado">Conciliados</option>
           <option value="ignorado">Ignorados</option>
           <option value="">Todos</option>
@@ -985,11 +1185,13 @@ function ConciliacaoTab() {
                   <span className={`px-2 py-0.5 rounded-full text-xs ${
                     e.status === 'conciliado' ? 'bg-emerald-100 text-emerald-700' :
                     e.status === 'ignorado' ? 'bg-gray-100 text-gray-500' :
+                    e.status === 'parcial' ? 'bg-violet-100 text-violet-700' :
+                    e.status === 'divergente' ? 'bg-red-100 text-red-700' :
                     'bg-amber-100 text-amber-700'
                   }`}>{e.status}</span>
                 </td>
                 <td className="px-3 py-3 text-center">
-                  {e.status === 'pendente' && e.tipo === 'debito' && (
+                  {(e.status === 'pendente' || e.status === 'parcial') && e.tipo === 'debito' && (
                     <>
                       <button onClick={() => setConciliarExtrato(e)}
                         className="px-2 py-1 rounded text-xs font-medium text-emerald-700 bg-emerald-50 hover:bg-emerald-100 mr-1">
