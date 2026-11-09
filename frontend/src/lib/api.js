@@ -134,6 +134,7 @@ export const contasBancariasApi = {
 
 export const fornecedoresApi = {
   list: (params) => api.get('/fornecedores', { params }),
+  posicao: () => api.get('/fornecedores/posicao'),
   get: (id) => api.get(`/fornecedores/${id}`),
   update: (id, data) => api.put(`/fornecedores/${id}`, data),
   sync: () => api.post('/fornecedores/sync'),

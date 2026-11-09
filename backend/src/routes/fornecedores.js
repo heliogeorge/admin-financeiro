@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { adminDb } = require('../config/database');
 const { authMiddleware } = require('../middleware/auth');
-const { syncFornecedores, listFornecedores, updateRegras } = require('../services/fornecedoresService');
+const { syncFornecedores, listFornecedores, updateRegras, posicaoFornecedores } = require('../services/fornecedoresService');
 
 /**
  * GET /api/fornecedores
@@ -26,6 +26,20 @@ router.post('/sync', authMiddleware, async (req, res, next) => {
   try {
     const stats = await syncFornecedores({ username: req.user.username });
     res.json(stats);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/fornecedores/posicao
+ * Posição por fornecedor: saldo em aberto, vencidos, "por fora" e pendências
+ * de complemento (regra prevê e ainda não foi lançado).
+ */
+router.get('/posicao', async (req, res, next) => {
+  try {
+    const result = await posicaoFornecedores();
+    res.json(result);
   } catch (err) {
     next(err);
   }

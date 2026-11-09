@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react';
-import { fornecedoresApi } from '../lib/api';
-import { formatCurrency } from '../lib/utils';
+import { fornecedoresApi, entradasApi } from '../lib/api';
+import { formatCurrency, formatDate } from '../lib/utils';
 import {
   Search, RefreshCw, X, Check, ChevronLeft, ChevronRight,
-  Pencil, Truck, Percent, HandCoins,
+  Pencil, Truck, Percent, HandCoins, List, BarChart3, AlertTriangle, Zap,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -298,6 +298,175 @@ function RegraModal({ fornecedor, onClose, onSaved }) {
 }
 
 // ============================================
+// Posição por fornecedor (F5)
+// ============================================
+const MOTIVO_PENDENCIA = {
+  a_informar: { label: 'valor a informar', badge: 'bg-violet-100 text-violet-700' },
+  aguardando_parcelas: { label: 'aguardando boletos do ERP', badge: 'bg-amber-100 text-amber-700' },
+};
+
+function PosicaoView() {
+  const [posicao, setPosicao] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [gerando, setGerando] = useState(false);
+
+  const fetchPosicao = async () => {
+    setLoading(true);
+    try {
+      const res = await fornecedoresApi.posicao();
+      setPosicao(res.data);
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Erro ao carregar posição');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchPosicao(); }, []);
+
+  const handleGerar = async () => {
+    setGerando(true);
+    try {
+      const res = await entradasApi.gerarComplementos();
+      const s = res.data;
+      toast.success(`${s.contas_criadas} complementos gerados em ${s.geradas} entradas`
+        + (s.aguardando_parcelas ? ` (${s.aguardando_parcelas} aguardando boletos)` : ''), { duration: 6000 });
+      fetchPosicao();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Erro ao gerar complementos');
+    } finally {
+      setGerando(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="card px-4 py-12 text-center text-gray-400">
+        <RefreshCw size={20} className="animate-spin inline mr-2" />Carregando posição...
+      </div>
+    );
+  }
+  if (!posicao) return null;
+
+  const alertasInformar = posicao.alertas.filter((a) => a.motivo === 'a_informar');
+  const alertasAguardando = posicao.alertas.filter((a) => a.motivo === 'aguardando_parcelas');
+
+  return (
+    <>
+      {/* Totais */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+        <div className="card p-4">
+          <p className="text-xs text-gray-500 font-medium uppercase">Fornecedores c/ débito</p>
+          <p className="text-xl font-bold text-gray-900 mt-1">{posicao.totais.fornecedores}</p>
+        </div>
+        <div className="card p-4">
+          <p className="text-xs text-gray-500 font-medium uppercase">Total em aberto</p>
+          <p className="text-xl font-bold text-amber-700 mt-1">{formatCurrency(posicao.totais.saldo_aberto)}</p>
+        </div>
+        <div className="card p-4">
+          <p className="text-xs text-gray-500 font-medium uppercase">Vencido</p>
+          <p className="text-xl font-bold text-red-600 mt-1">{formatCurrency(posicao.totais.saldo_vencido)}</p>
+        </div>
+        <div className="card p-4">
+          <p className="text-xs text-gray-500 font-medium uppercase">"Por fora" em aberto</p>
+          <p className="text-xl font-bold text-violet-700 mt-1">{formatCurrency(posicao.totais.saldo_por_fora)}</p>
+        </div>
+      </div>
+
+      {/* Alertas de complemento previsto e não lançado */}
+      {posicao.alertas.length > 0 && (
+        <div className="card mb-4 border-l-4 border-violet-400 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+            <div className="flex items-center gap-2">
+              <AlertTriangle size={16} className="text-violet-600" />
+              <h3 className="text-sm font-semibold text-gray-800">
+                {posicao.alertas.length} entrada{posicao.alertas.length > 1 ? 's' : ''} com "por fora" previsto e não lançado
+              </h3>
+            </div>
+            {alertasAguardando.length > 0 && (
+              <button onClick={handleGerar} disabled={gerando}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-violet-600 text-white hover:bg-violet-500 disabled:opacity-50">
+                <Zap size={13} className={gerando ? 'animate-pulse' : ''} />
+                {gerando ? 'Gerando...' : 'Gerar complementos agora'}
+              </button>
+            )}
+          </div>
+          <div className="space-y-1.5 max-h-48 overflow-y-auto">
+            {posicao.alertas.map((a) => {
+              const meta = MOTIVO_PENDENCIA[a.motivo] || MOTIVO_PENDENCIA.aguardando_parcelas;
+              return (
+                <div key={a.entrada_id} className="flex flex-wrap items-center gap-2 text-sm">
+                  <span className="font-medium text-gray-800">{a.fornecedor_nome}</span>
+                  <span className="font-mono text-xs text-gray-500">
+                    {a.numerorr}{a.numeronf ? ` · NF ${a.numeronf}` : ''}
+                  </span>
+                  <span className="text-xs text-gray-400">{formatDate(a.data_emissao)} · {formatCurrency(a.total_faturado)}</span>
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${meta.badge}`}>{meta.label}</span>
+                </div>
+              );
+            })}
+          </div>
+          {alertasInformar.length > 0 && (
+            <p className="text-[11px] text-gray-400 mt-2">
+              "Valor a informar": lance pelo botão "+ Lançar por fora" na tela de Entradas.
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Tabela de posição */}
+      <div className="card overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-gray-100 bg-gray-50/50">
+                <th className="table-header px-3 py-3 text-left">Fornecedor</th>
+                <th className="table-header px-3 py-3 text-center">Contas</th>
+                <th className="table-header px-3 py-3 text-left">Próx. Venc.</th>
+                <th className="table-header px-3 py-3 text-right">Vencido</th>
+                <th className="table-header px-3 py-3 text-right">"Por fora"</th>
+                <th className="table-header px-3 py-3 text-right">Total em aberto</th>
+                <th className="table-header px-3 py-3 text-center">Pendências</th>
+              </tr>
+            </thead>
+            <tbody>
+              {posicao.data.length === 0 ? (
+                <tr><td colSpan={7} className="px-4 py-12 text-center text-gray-400">Nenhum débito em aberto. 🎉</td></tr>
+              ) : posicao.data.map((g, i) => (
+                <tr key={i} className={`border-b border-gray-50 hover:bg-gray-50/50 ${g.saldo_vencido > 0.01 ? 'border-l-4 border-l-red-400' : ''}`}>
+                  <td className="px-3 py-3 text-sm">
+                    <p className="font-medium text-gray-900 truncate max-w-[240px]">{g.nome}</p>
+                    {g.codiforn && <p className="text-xs text-gray-400 font-mono">{g.codiforn}</p>}
+                  </td>
+                  <td className="px-3 py-3 text-sm text-center text-gray-600">
+                    {g.qtd_abertas}{g.qtd_vencidas > 0 && <span className="text-red-600"> ({g.qtd_vencidas} venc.)</span>}
+                  </td>
+                  <td className="px-3 py-3 text-sm text-gray-600">{g.proxima_vencimento ? formatDate(g.proxima_vencimento) : '—'}</td>
+                  <td className="px-3 py-3 text-sm text-right text-red-600">
+                    {g.saldo_vencido > 0.01 ? formatCurrency(g.saldo_vencido) : '—'}
+                  </td>
+                  <td className="px-3 py-3 text-sm text-right text-violet-700">
+                    {g.saldo_por_fora > 0.01 ? formatCurrency(g.saldo_por_fora) : '—'}
+                  </td>
+                  <td className="px-3 py-3 text-sm text-right font-semibold text-gray-900">{formatCurrency(g.saldo_aberto)}</td>
+                  <td className="px-3 py-3 text-center">
+                    {g.pendencias_complemento > 0 ? (
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-violet-100 text-violet-700">
+                        <AlertTriangle size={11} /> {g.pendencias_complemento}
+                      </span>
+                    ) : <span className="text-gray-300">—</span>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ============================================
 // Página
 // ============================================
 export default function FornecedoresPage() {
@@ -306,6 +475,7 @@ export default function FornecedoresPage() {
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [viewMode, setViewMode] = useState('cadastro'); // 'cadastro' | 'posicao'
   const [filters, setFilters] = useState({ q: '', com_regra: false, page: 1, perPage: 50 });
 
   const fetchData = async () => {
@@ -361,28 +531,53 @@ export default function FornecedoresPage() {
 
       <div className="card p-4 mb-4">
         <div className="flex flex-wrap items-center gap-3">
-          <div className="relative">
-            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-            <input
-              type="text"
-              placeholder="Nome, código ou CNPJ..."
-              value={filters.q}
-              onChange={(e) => setFilters(f => ({ ...f, q: e.target.value, page: 1 }))}
-              className="input-field pl-9 w-72"
-            />
+          <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden">
+            <button
+              onClick={() => setViewMode('cadastro')}
+              className={`inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium transition-colors ${
+                viewMode === 'cadastro' ? 'bg-brand-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              <List size={14} /> Cadastro
+            </button>
+            <button
+              onClick={() => setViewMode('posicao')}
+              className={`inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium transition-colors ${
+                viewMode === 'posicao' ? 'bg-brand-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              <BarChart3 size={14} /> Posição
+            </button>
           </div>
-          <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={filters.com_regra}
-              onChange={(e) => setFilters(f => ({ ...f, com_regra: e.target.checked, page: 1 }))}
-              className="rounded border-gray-300 text-brand-600 focus:ring-brand-500"
-            />
-            Só com regra de "por fora"
-          </label>
+          {viewMode === 'cadastro' && (
+            <>
+              <div className="relative">
+                <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Nome, código ou CNPJ..."
+                  value={filters.q}
+                  onChange={(e) => setFilters(f => ({ ...f, q: e.target.value, page: 1 }))}
+                  className="input-field pl-9 w-72"
+                />
+              </div>
+              <label className="flex items-center gap-2 text-sm text-gray-600 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={filters.com_regra}
+                  onChange={(e) => setFilters(f => ({ ...f, com_regra: e.target.checked, page: 1 }))}
+                  className="rounded border-gray-300 text-brand-600 focus:ring-brand-500"
+                />
+                Só com regra de "por fora"
+              </label>
+            </>
+          )}
         </div>
       </div>
 
+      {viewMode === 'posicao' && <PosicaoView />}
+
+      {viewMode === 'cadastro' && (
       <div className="card overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full">
@@ -464,6 +659,7 @@ export default function FornecedoresPage() {
           </div>
         </div>
       </div>
+      )}
 
       {editing && (
         <RegraModal

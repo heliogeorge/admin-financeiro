@@ -209,4 +209,103 @@ async function updateRegras(id, payload, username) {
   return adminDb(TABLE).where('id', id).first();
 }
 
-module.exports = { syncFornecedores, listFornecedores, updateRegras, CAMPOS_REGRA };
+/**
+ * Posição por fornecedor (F5): quanto devo a cada um, vencidos, "por fora"
+ * em aberto e pendências de complemento (previsto pela regra e não lançado).
+ */
+async function posicaoFornecedores() {
+  const abertas = await adminDb('contas_pagar')
+    .whereIn('status', ['pendente', 'vencido'])
+    .where('saldo_aberto', '>', 0.01)
+    .select(
+      'fornecedor_id', 'fornecedor', 'erp_fornecedor_id',
+      'saldo_aberto', 'data_vencimento', 'status', 'tipo_titulo'
+    );
+
+  const grupos = new Map();
+  for (const c of abertas) {
+    const chave = c.fornecedor_id ? `f${c.fornecedor_id}` : `n${(c.fornecedor || '?').toUpperCase()}`;
+    if (!grupos.has(chave)) {
+      grupos.set(chave, {
+        fornecedor_id: c.fornecedor_id || null,
+        nome: c.fornecedor,
+        codiforn: c.erp_fornecedor_id || null,
+        qtd_abertas: 0,
+        saldo_aberto: 0,
+        qtd_vencidas: 0,
+        saldo_vencido: 0,
+        saldo_por_fora: 0,
+        proxima_vencimento: null,
+      });
+    }
+    const g = grupos.get(chave);
+    const saldo = Number(c.saldo_aberto) || 0;
+    g.qtd_abertas += 1;
+    g.saldo_aberto += saldo;
+    if (c.status === 'vencido') {
+      g.qtd_vencidas += 1;
+      g.saldo_vencido += saldo;
+    }
+    if (c.tipo_titulo === 'complemento') g.saldo_por_fora += saldo;
+    const venc = String(c.data_vencimento).slice(0, 10);
+    if (!g.proxima_vencimento || venc < g.proxima_vencimento) g.proxima_vencimento = venc;
+  }
+
+  // Pendências: entradas de fornecedor com regra ativa, dentro da data de
+  // corte, que ainda não têm complemento vinculado.
+  const pendencias = await adminDb('entradas_mercadoria as e')
+    .join('fornecedores as f', 'f.codiforn', 'e.codiforn')
+    .where('f.ativo', true)
+    .whereNot('f.complemento_tipo', 'nenhum')
+    .where((b) => {
+      b.whereNull('f.complemento_desde')
+        .orWhereRaw('e.data_emissao >= f.complemento_desde');
+    })
+    .whereNotExists(function naoTemComplemento() {
+      this.select(1)
+        .from('contas_pagar_itens as i')
+        .join('contas_pagar as c', 'c.id', 'i.conta_pagar_id')
+        .whereRaw('i.entrada_id = e.id')
+        .where('c.tipo_titulo', 'complemento')
+        .whereNot('c.status', 'cancelado');
+    })
+    .orderBy('e.data_emissao', 'desc')
+    .limit(100)
+    .select(
+      'e.id as entrada_id', 'e.numerorr', 'e.numeronf', 'e.data_emissao',
+      'e.total_faturado', 'e.codiforn',
+      'f.id as fornecedor_id', 'f.nome as fornecedor_nome', 'f.complemento_tipo'
+    );
+
+  const alertas = pendencias.map((p) => ({
+    ...p,
+    motivo: p.complemento_tipo === 'valor_informado' ? 'a_informar' : 'aguardando_parcelas',
+  }));
+
+  const data = [...grupos.values()]
+    .map((g) => ({
+      ...g,
+      saldo_aberto: Number(g.saldo_aberto.toFixed(2)),
+      saldo_vencido: Number(g.saldo_vencido.toFixed(2)),
+      saldo_por_fora: Number(g.saldo_por_fora.toFixed(2)),
+      pendencias_complemento: alertas.filter((a) => (
+        g.fornecedor_id ? a.fornecedor_id === g.fornecedor_id : false
+      )).length,
+    }))
+    .sort((a, b) => b.saldo_aberto - a.saldo_aberto);
+
+  return {
+    data,
+    alertas,
+    totais: {
+      fornecedores: data.length,
+      saldo_aberto: Number(data.reduce((s, g) => s + g.saldo_aberto, 0).toFixed(2)),
+      saldo_vencido: Number(data.reduce((s, g) => s + g.saldo_vencido, 0).toFixed(2)),
+      saldo_por_fora: Number(data.reduce((s, g) => s + g.saldo_por_fora, 0).toFixed(2)),
+    },
+  };
+}
+
+module.exports = {
+  syncFornecedores, listFornecedores, updateRegras, posicaoFornecedores, CAMPOS_REGRA,
+};

@@ -222,10 +222,19 @@ ligada (decisão adiada, como planejado).
 - Baixa automática opcional (conservadora: só match único de valor+fornecedor) —
   decidir se liga depois de rodar um tempo no manual.
 
-### F5 — Polimento
-- Posição por fornecedor (quanto devo a cada um, títulos em aberto, complementos
-  pendentes de informar).
-- Alertas: entrada titulada mas com complemento previsto e não lançado.
+### F5 — Polimento ✅ FEITA 09/11/2026
+- `GET /api/fornecedores/posicao` + aba "Posição" na página Fornecedores:
+  quanto devo a cada um (em aberto, vencido, "por fora"), próxima a vencer,
+  ordenado pelo saldo, com totais.
+- Alertas: entradas com "por fora" previsto pela regra e não lançado
+  (aguardando boletos do ERP ou valor a informar), com botão
+  "Gerar complementos agora".
+
+---
+**PLANO 100% IMPLEMENTADO (F1–F5) em 09/11/2026.** Pendências operacionais:
+cadastrar as regras reais de "por fora" por fornecedor (F0.1) e usar a baixa
+em lote no próximo depósito mensal. Futuro opcional: baixa automática em lote
+(conservadora) e visão por título como padrão.
 
 ## 6. O que NÃO muda
 - `contas_pagar` continua sendo a parcela (modelo de mercado); nenhuma reescrita.
