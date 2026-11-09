@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, Fragment } from 'react';
 import {
   contasPagarApi, syncApi, chequesApi, inboxApi, contasBancariasApi, planoContasApi,
 } from '../lib/api';
@@ -8,10 +8,10 @@ import {
   getStatusLabel, getStatusBadge,
 } from '../lib/utils';
 import {
-  Plus, Search, ChevronLeft, ChevronRight, RefreshCw,
+  Plus, Search, ChevronLeft, ChevronRight, ChevronDown, RefreshCw,
   X, Check, Trash2, Download, Pencil, Database, FileText,
   BookOpen, CreditCard, Inbox, Link2, Paperclip, Upload,
-  Clock, AlertTriangle, Undo2,
+  Clock, AlertTriangle, Undo2, Layers, List,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import LojaSelect from '../components/LojaSelect';
@@ -1096,6 +1096,181 @@ function PagarComChequesModal({ isOpen, onClose, onConfirm, contasSelecionadas =
 }
 
 // ============================================
+// Visão por TÍTULO — agrupa as parcelas de uma mesma compra
+// (entrada de mercadoria ou fornecedor+documento)
+// ============================================
+const TITULO_STATUS_META = {
+  pago: { label: 'Pago', badge: 'bg-emerald-100 text-emerald-700' },
+  vencido: { label: 'Vencido', badge: 'bg-red-100 text-red-700' },
+  pendente: { label: 'Pendente', badge: 'bg-amber-100 text-amber-700' },
+};
+
+function TitulosTable({ titulos, loading, expanded, onToggleExpand, onOpenConta }) {
+  if (loading) {
+    return (
+      <div className="px-4 py-12 text-center text-gray-400">
+        <RefreshCw size={20} className="animate-spin inline mr-2" />Carregando títulos...
+      </div>
+    );
+  }
+  if (titulos.length === 0) {
+    return (
+      <div className="px-4 py-12 text-center text-gray-400">
+        Nenhum título encontrado no período.
+      </div>
+    );
+  }
+
+  return (
+    <table className="w-full">
+      <thead>
+        <tr className="border-b border-gray-100 bg-gray-50/50">
+          <th className="px-3 py-3 w-8" />
+          <th className="table-header px-3 py-3 text-left">Loja</th>
+          <th className="table-header px-3 py-3 text-left">Fornecedor</th>
+          <th className="table-header px-3 py-3 text-left">Documento / Entrada</th>
+          <th className="table-header px-3 py-3 text-center">Parcelas</th>
+          <th className="table-header px-3 py-3 text-left">Próx. Venc.</th>
+          <th className="table-header px-3 py-3 text-right">Total</th>
+          <th className="table-header px-3 py-3 text-right">Pago</th>
+          <th className="table-header px-3 py-3 text-right">Falta</th>
+          <th className="table-header px-3 py-3 text-center">Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {titulos.map((g) => {
+          const meta = TITULO_STATUS_META[g.status] || TITULO_STATUS_META.pendente;
+          const isOpen = expanded.includes(g.chave);
+          const pct = g.valor_total > 0 ? Math.min(100, (g.valor_pago / g.valor_total) * 100) : 0;
+          return (
+            <Fragment key={g.chave}>
+              <tr
+                onClick={() => onToggleExpand(g.chave)}
+                className={`border-b border-gray-50 cursor-pointer transition-colors hover:bg-gray-50/50
+                  ${isOpen ? 'bg-brand-50/30' : ''} ${g.parcial ? 'border-l-4 border-l-amber-400' : ''}`}
+              >
+                <td className="px-3 py-3 text-gray-400">
+                  <ChevronDown size={15} className={`transition-transform ${isOpen ? '' : '-rotate-90'}`} />
+                </td>
+                <td className="px-3 py-3 text-sm text-gray-500"><LojaLabel codiloja={g.codiloja} /></td>
+                <td className="px-3 py-3 text-sm">
+                  <p className="font-medium text-gray-900 truncate max-w-[200px]">{g.fornecedor}</p>
+                  {g.erp_fornecedor_id && <p className="text-xs text-gray-400 font-mono">{g.erp_fornecedor_id}</p>}
+                </td>
+                <td className="px-3 py-3 text-sm text-gray-600">
+                  <p className="font-mono text-xs text-gray-600">{g.documento || '—'}</p>
+                  {g.entrada ? (
+                    <p className="text-[10px] text-brand-600">
+                      {g.entrada.numerorr || `entrada #${g.entrada.id}`}
+                      {g.entrada.numeronf ? ` · NF ${g.entrada.numeronf}` : ''}
+                    </p>
+                  ) : (
+                    <p className="text-[10px] text-gray-400">sem entrada vinculada</p>
+                  )}
+                </td>
+                <td className="px-3 py-3 text-center">
+                  <p className="text-sm font-semibold text-gray-800">{g.qtd_pagas}/{g.qtd_parcelas}</p>
+                  <div className="mx-auto mt-1 w-14 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full ${g.status === 'pago' ? 'bg-emerald-400' : 'bg-amber-400'}`}
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                </td>
+                <td className="px-3 py-3 text-sm">
+                  {g.proxima_vencimento ? (
+                    <>
+                      <p className="text-gray-700 font-medium">{formatDate(g.proxima_vencimento)}</p>
+                      <p className="text-xs text-gray-400">{formatDateRelative(g.proxima_vencimento)}</p>
+                    </>
+                  ) : <span className="text-gray-300">—</span>}
+                </td>
+                <td className="px-3 py-3 text-sm text-right font-semibold text-gray-900">{formatCurrency(g.valor_total)}</td>
+                <td className="px-3 py-3 text-sm text-right text-emerald-600">{formatCurrency(g.valor_pago)}</td>
+                <td className={`px-3 py-3 text-sm text-right font-semibold ${g.saldo_aberto > 0.01 ? 'text-amber-700' : 'text-gray-300'}`}>
+                  {g.saldo_aberto > 0.01 ? formatCurrency(g.saldo_aberto) : '—'}
+                </td>
+                <td className="px-3 py-3 text-center">
+                  <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${meta.badge}`}>
+                    {meta.label}
+                  </span>
+                  {g.parcial && (
+                    <p className="text-[10px] text-amber-700 font-semibold mt-0.5">parcial</p>
+                  )}
+                </td>
+              </tr>
+              {isOpen && (
+                <tr key={`${g.chave}-det`} className="bg-gray-50/60">
+                  <td colSpan={10} className="px-4 pb-4 pt-1">
+                    <table className="w-full text-sm bg-white rounded-lg overflow-hidden border border-gray-100">
+                      <thead>
+                        <tr className="text-xs text-gray-500 bg-gray-50/80 border-b border-gray-100">
+                          <th className="px-3 py-2 text-left">Doc / Referência</th>
+                          <th className="px-3 py-2 text-left">Vencimento</th>
+                          <th className="px-3 py-2 text-right">Valor</th>
+                          <th className="px-3 py-2 text-right">Pago</th>
+                          <th className="px-3 py-2 text-right">Falta</th>
+                          <th className="px-3 py-2 text-center">Boleto</th>
+                          <th className="px-3 py-2 text-center">Status</th>
+                          <th className="px-3 py-2 text-center w-16">Detalhe</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {g.parcelas.map((p) => (
+                          <tr key={p.id} className="border-b border-gray-50 last:border-0 hover:bg-gray-50/50">
+                            <td className="px-3 py-2">
+                              <p className="font-mono text-xs text-gray-600">{p.documento || '—'}</p>
+                              {p.referencia && <p className="text-[10px] text-gray-400">{p.referencia}</p>}
+                            </td>
+                            <td className="px-3 py-2">
+                              <p className="text-gray-700">{formatDate(p.data_vencimento)}</p>
+                              {p.data_pagamento && (
+                                <p className="text-[10px] text-emerald-600">pago em {formatDate(p.data_pagamento)}</p>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 text-right font-medium">{formatCurrency(p.valor)}</td>
+                            <td className="px-3 py-2 text-right text-emerald-600">
+                              {parseFloat(p.valor_pago) > 0 ? formatCurrency(p.valor_pago) : '—'}
+                            </td>
+                            <td className="px-3 py-2 text-right text-amber-700">
+                              {parseFloat(p.saldo_aberto) > 0.01 ? formatCurrency(p.saldo_aberto) : '—'}
+                            </td>
+                            <td className="px-3 py-2 text-center text-xs text-gray-500">
+                              {p.dda_count > 0 ? `${p.dda_count} DDA` : '—'}
+                            </td>
+                            <td className="px-3 py-2 text-center">
+                              <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${getStatusBadge(p.status)}`}>
+                                {getStatusLabel(p.status)}
+                              </span>
+                              {p.total_baixas > 1 && (
+                                <p className="text-[10px] text-gray-400">{p.total_baixas} baixas</p>
+                              )}
+                            </td>
+                            <td className="px-3 py-2 text-center">
+                              <button
+                                onClick={(e) => { e.stopPropagation(); onOpenConta(p.id); }}
+                                className="p-1.5 rounded hover:bg-gray-100 text-gray-500"
+                                title="Abrir detalhe da parcela"
+                              >
+                                <Search size={14} />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </td>
+                </tr>
+              )}
+            </Fragment>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+// ============================================
 // Página principal
 // ============================================
 export default function ContasPagarPage() {
@@ -1119,6 +1294,13 @@ export default function ContasPagarPage() {
   const [selectedForm, setSelectedForm] = useState(buildContaFormState());
   const [checked, setChecked] = useState([]); // multi-select IDs
   const [contasBancarias, setContasBancarias] = useState([]);
+
+  // Visão por título
+  const [viewMode, setViewMode] = useState('parcelas'); // 'parcelas' | 'titulos'
+  const [titulos, setTitulos] = useState([]);
+  const [titulosPagination, setTitulosPagination] = useState({});
+  const [loadingTitulos, setLoadingTitulos] = useState(false);
+  const [expandedTitulos, setExpandedTitulos] = useState([]);
 
   const [filters, setFilters] = useState({
     status: '', origem: '', codiloja: '', fornecedor: '',
@@ -1155,6 +1337,22 @@ export default function ContasPagarPage() {
     }
   };
 
+  const fetchTitulos = async () => {
+    setLoadingTitulos(true);
+    try {
+      const params = { ...filters };
+      Object.keys(params).forEach(k => { if (params[k] === '') delete params[k]; });
+      const res = await contasPagarApi.titulos(params);
+      setTitulos(res.data.data);
+      setTitulosPagination(res.data.pagination);
+    } catch (err) {
+      console.error('Erro ao carregar títulos:', err);
+      toast.error('Erro ao carregar visão por título');
+    } finally {
+      setLoadingTitulos(false);
+    }
+  };
+
   const fetchData = async () => {
     setLoading(true);
     try {
@@ -1171,6 +1369,9 @@ export default function ContasPagarPage() {
       setPagination(listRes.data.pagination);
       setResumo(resumoRes.data);
       setSyncStatus(statusRes.data);
+      if (viewMode === 'titulos') {
+        await fetchTitulos();
+      }
       if (selectedId) {
         await loadSelectedDetail(selectedId);
       }
@@ -1220,6 +1421,7 @@ export default function ContasPagarPage() {
   };
 
   useEffect(() => { fetchData(); }, [filters]);
+  useEffect(() => { if (viewMode === 'titulos') fetchTitulos(); }, [viewMode]); // eslint-disable-line
   useEffect(() => { fetchInbox(); fetchContasBancarias(); }, []);
   useEffect(() => { setChecked([]); }, [data]); // limpa seleção ao trocar dados
 
@@ -1591,6 +1793,24 @@ export default function ContasPagarPage() {
       {/* Filters */}
       <div className="card p-4 mb-4">
         <div className="flex flex-wrap items-center gap-3">
+          <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden">
+            <button
+              onClick={() => { setViewMode('parcelas'); setFilters(prev => ({ ...prev, page: 1 })); }}
+              className={`inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium transition-colors ${
+                viewMode === 'parcelas' ? 'bg-brand-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              <List size={14} /> Por parcela
+            </button>
+            <button
+              onClick={() => { setViewMode('titulos'); setFilters(prev => ({ ...prev, page: 1 })); }}
+              className={`inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium transition-colors ${
+                viewMode === 'titulos' ? 'bg-brand-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              <Layers size={14} /> Por título
+            </button>
+          </div>
           <LojaSelect value={filters.codiloja} onChange={(e) => updateFilter('codiloja', e.target.value)} className="input-field w-36" />
           <select value={filters.status} onChange={(e) => updateFilter('status', e.target.value)} className="input-field w-36">
             <option value="">Todos status</option><option value="pendente">Pendente</option>
@@ -1646,6 +1866,17 @@ export default function ContasPagarPage() {
       {/* Table */}
       <div className="card overflow-hidden">
         <div className="overflow-x-auto">
+          {viewMode === 'titulos' ? (
+            <TitulosTable
+              titulos={titulos}
+              loading={loadingTitulos}
+              expanded={expandedTitulos}
+              onToggleExpand={(chave) => setExpandedTitulos(prev => (
+                prev.includes(chave) ? prev.filter(c => c !== chave) : [...prev, chave]
+              ))}
+              onOpenConta={(id) => setSelectedId(id)}
+            />
+          ) : (
           <table className="w-full">
             <thead>
               <tr className="border-b border-gray-100 bg-gray-50/50">
@@ -1790,17 +2021,24 @@ export default function ContasPagarPage() {
               )}
             </tbody>
           </table>
+          )}
         </div>
 
         {/* Pagination */}
-        <div className="flex items-center justify-between px-4 py-3 border-t border-gray-100">
-          <p className="text-xs text-gray-500">{pagination.total ? `${pagination.total} registros` : ''}</p>
-          <div className="flex items-center gap-2">
-            <button onClick={() => setFilters(prev => ({ ...prev, page: prev.page - 1 }))} disabled={filters.page <= 1} className="btn-secondary py-1.5 px-2 text-xs disabled:opacity-40"><ChevronLeft size={14} /></button>
-            <span className="text-xs text-gray-600">Pág. {pagination.page || 1} de {pagination.totalPages || 1}</span>
-            <button onClick={() => setFilters(prev => ({ ...prev, page: prev.page + 1 }))} disabled={filters.page >= (pagination.totalPages || 1)} className="btn-secondary py-1.5 px-2 text-xs disabled:opacity-40"><ChevronRight size={14} /></button>
-          </div>
-        </div>
+        {(() => {
+          const pag = viewMode === 'titulos' ? titulosPagination : pagination;
+          const unidade = viewMode === 'titulos' ? 'títulos' : 'registros';
+          return (
+            <div className="flex items-center justify-between px-4 py-3 border-t border-gray-100">
+              <p className="text-xs text-gray-500">{pag.total ? `${pag.total} ${unidade}` : ''}</p>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setFilters(prev => ({ ...prev, page: prev.page - 1 }))} disabled={filters.page <= 1} className="btn-secondary py-1.5 px-2 text-xs disabled:opacity-40"><ChevronLeft size={14} /></button>
+                <span className="text-xs text-gray-600">Pág. {pag.page || 1} de {pag.totalPages || 1}</span>
+                <button onClick={() => setFilters(prev => ({ ...prev, page: prev.page + 1 }))} disabled={filters.page >= (pag.totalPages || 1)} className="btn-secondary py-1.5 px-2 text-xs disabled:opacity-40"><ChevronRight size={14} /></button>
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Detail Panel */}
@@ -1870,6 +2108,79 @@ export default function ContasPagarPage() {
             <div className="col-span-2"><span className="text-gray-400 block">Histórico</span>{selected.historico || '—'}</div>
             <div className="col-span-2"><span className="text-gray-400 block">Observações</span>{selected.observacoes || selected.descricao || '—'}</div>
           </div>
+
+          {/* Título — parcelas irmãs da mesma compra */}
+          {selected.titulo && (selected.titulo.qtd_parcelas > 1 || selected.titulo.entrada) && (
+            <div className="mt-5 border border-brand-100 rounded-xl p-4 bg-brand-50/20">
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+                <div className="flex items-center gap-2">
+                  <Layers size={15} className="text-brand-600" />
+                  <h4 className="text-sm font-semibold text-gray-700">
+                    Título — {selected.titulo.qtd_pagas}/{selected.titulo.qtd_parcelas} parcelas pagas
+                  </h4>
+                  {selected.titulo.entrada && (
+                    <span className="text-xs text-brand-600 bg-brand-100/60 px-2 py-0.5 rounded-full">
+                      {selected.titulo.entrada.numerorr || `entrada #${selected.titulo.entrada.id}`}
+                      {selected.titulo.entrada.numeronf ? ` · NF ${selected.titulo.entrada.numeronf}` : ''}
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-4 text-xs">
+                  <span className="text-gray-500">Total <strong className="text-gray-900">{formatCurrency(selected.titulo.valor_total)}</strong></span>
+                  <span className="text-emerald-600">Pago <strong>{formatCurrency(selected.titulo.valor_pago)}</strong></span>
+                  <span className={selected.titulo.saldo_aberto > 0.01 ? 'text-amber-700' : 'text-gray-400'}>
+                    Falta <strong>{selected.titulo.saldo_aberto > 0.01 ? formatCurrency(selected.titulo.saldo_aberto) : 'R$ 0,00'}</strong>
+                  </span>
+                </div>
+              </div>
+              {selected.titulo.parcelas?.length > 1 && (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm bg-white rounded-lg border border-gray-100 overflow-hidden">
+                    <thead>
+                      <tr className="text-xs text-gray-500 bg-gray-50/80 border-b border-gray-100">
+                        <th className="px-3 py-2 text-left">Documento</th>
+                        <th className="px-3 py-2 text-left">Vencimento</th>
+                        <th className="px-3 py-2 text-right">Valor</th>
+                        <th className="px-3 py-2 text-right">Pago</th>
+                        <th className="px-3 py-2 text-center">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selected.titulo.parcelas.map((p) => {
+                        const isAtual = p.id === selected.id;
+                        return (
+                          <tr
+                            key={p.id}
+                            onClick={() => { if (!isAtual) setSelectedId(p.id); }}
+                            className={`border-b border-gray-50 last:border-0 ${
+                              isAtual ? 'bg-brand-50/50 font-medium' : 'cursor-pointer hover:bg-gray-50/70'
+                            }`}
+                            title={isAtual ? 'Parcela atual' : 'Abrir esta parcela'}
+                          >
+                            <td className="px-3 py-2">
+                              <span className="font-mono text-xs text-gray-600">{p.documento || p.referencia || `#${p.id}`}</span>
+                              {isAtual && <span className="ml-2 text-[10px] text-brand-600 font-semibold">← esta</span>}
+                            </td>
+                            <td className="px-3 py-2">{formatDate(p.data_vencimento)}</td>
+                            <td className="px-3 py-2 text-right">{formatCurrency(p.valor)}</td>
+                            <td className="px-3 py-2 text-right text-emerald-600">
+                              {parseFloat(p.valor_pago) > 0 ? formatCurrency(p.valor_pago) : '—'}
+                            </td>
+                            <td className="px-3 py-2 text-center">
+                              <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${getStatusBadge(p.status)}`}>
+                                {getStatusLabel(p.status)}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Baixas / histórico de pagamentos */}
           {isEditingSelected && (
             <div className="mt-5">

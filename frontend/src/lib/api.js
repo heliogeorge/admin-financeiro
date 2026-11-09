@@ -76,6 +76,7 @@ function buildBaixaFormData(data, arquivo) {
 
 export const contasPagarApi = {
   list: (params) => api.get('/contas-pagar', { params }),
+  titulos: (params) => api.get('/contas-pagar/titulos', { params }),
   resumo: (params) => api.get('/contas-pagar/resumo', { params }),
   recorrentes: (params) => api.get('/contas-pagar/recorrentes', { params }),
   get: (id) => api.get(`/contas-pagar/${id}`),

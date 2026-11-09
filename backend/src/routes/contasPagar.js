@@ -15,6 +15,7 @@ const {
   getSaldoAbertoConta,
 } = require('../services/baixaDocumentosService');
 const { hasTable, getExistingColumns, pickExistingFields } = require('../services/schemaCompatService');
+const { listTitulos, buildTituloDaConta } = require('../services/titulosService');
 
 const TABLE = 'contas_pagar';
 const ITENS = 'contas_pagar_itens';
@@ -119,12 +120,15 @@ async function buildContaDetalhe(contaId) {
   const hasBaixasTable = await hasTable(BAIXAS);
   if (hasBaixasTable) baixas = await listBaixas(contaId);
 
+  const titulo = await buildTituloDaConta(conta);
+
   return {
     ...conta,
     itens,
     dda_documentos: ddaDocs,
     cheques,
     baixas,
+    titulo,
   };
 }
 
@@ -293,6 +297,27 @@ router.get('/resumo', async (req, res, next) => {
     ) {
       return res.status(400).json({ error: err.message });
     }
+    next(err);
+  }
+});
+
+/**
+ * GET /api/contas-pagar/titulos
+ * Visão agrupada por título (entrada de mercadoria ou fornecedor+documento).
+ * Filtros: status (pendente|vencido|pago), codiloja, fornecedor, origem,
+ * dataInicio/dataFim (título entra se alguma parcela vence no período).
+ */
+router.get('/titulos', async (req, res, next) => {
+  try {
+    const {
+      status, codiloja, fornecedor, origem,
+      dataInicio, dataFim, page, perPage,
+    } = req.query;
+    const result = await listTitulos({
+      status, codiloja, fornecedor, origem, dataInicio, dataFim, page, perPage,
+    });
+    res.json(result);
+  } catch (err) {
     next(err);
   }
 });
