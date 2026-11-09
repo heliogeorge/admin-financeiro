@@ -64,7 +64,8 @@ async function rodarSyncDiario() {
     try {
       const auto = await autoConciliarMp({ username: 'mp-scheduler' });
       console.log(`[mp-scheduler] baixa automática: ${auto.dda_pagos.length} DDA pagos, `
-        + `${auto.baixados.length} baixas, ${auto.ambiguos} ambíguos, ${auto.sem_match} sem match`);
+        + `${auto.baixados.length} baixas, ${auto.ambiguos} ambíguos, ${auto.sem_match} sem match, `
+        + `${auto.aguardando_conta} aguardando conta do ERP`);
     } catch (err) {
       console.error('[mp-scheduler] erro na baixa automática:', err.message);
     }

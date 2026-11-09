@@ -602,8 +602,12 @@ const diffDias = (a, b) => Math.round((new Date(toDateStr(a)) - new Date(toDateS
  *    (parcelas mensais do mesmo cedente ficam distinguíveis).
  * 2. Marca o DDA como 'pago' (pago_em / pago_ref).
  * 3. Se o DDA tem conta a pagar vinculada em aberto — ou existe exatamente
- *    uma conta em aberto com o mesmo valor e vencimento — cria a baixa.
- * Ambíguos e sem DDA ficam pendentes para o fluxo manual.
+ *    uma conta em aberto com o mesmo valor e vencimento — cria a baixa e
+ *    marca o extrato como conciliado.
+ * Sem conta a pagar, o extrato FICA PENDENTE (só o DDA é marcado como pago):
+ * o sync do ERP costuma trazer a conta horas depois do pagamento, e a
+ * próxima rodada repesca o extrato pelo pago_ref do DDA e cria a baixa.
+ * Ambíguos e sem DDA também ficam pendentes para o fluxo manual.
  */
 async function autoConciliarMp({ username = 'auto-mp' } = {}) {
   const pendentes = await adminDb(EXTRATOS)
@@ -616,28 +620,40 @@ async function autoConciliarMp({ username = 'auto-mp' } = {}) {
   const ddaPagos = [];
   let ambiguos = 0;
   let semMatch = 0;
+  let aguardandoConta = 0;
 
   for (const extrato of pendentes) {
-    const m = (extrato.descricao || '').match(/\[banco (\d{3})\]/);
-    if (!m) { semMatch++; continue; }
-    const bancoNome = guessBankFromCode(m[1]) || m[1];
     const valor = Number(extrato.valor);
 
-    // 1. boleto DDA: mesmo banco + valor, vencimento mais próximo do pagamento
-    const ddas = await adminDb('dda_documentos')
-      .where('banco', bancoNome)
-      .whereBetween('valor_documento', [valor - 0.005, valor + 0.005])
-      .whereNotIn('status', ['descartado', 'pago'])
-      .select('id', 'data_vencimento', 'cedente_nome', 'conta_pagar_id', 'status');
+    // Repescagem: boleto já identificado numa rodada anterior em que a conta
+    // a pagar ainda não existia.
+    let best = await adminDb('dda_documentos')
+      .where('pago_ref', extrato.fit_id)
+      .where('status', 'pago')
+      .first('id', 'data_vencimento', 'cedente_nome', 'conta_pagar_id', 'status');
+    const repescagem = Boolean(best);
 
-    const ranked = ddas
-      .map((d) => ({ ...d, dist: Math.abs(diffDias(d.data_vencimento, extrato.data_transacao)) }))
-      .sort((a, b) => a.dist - b.dist);
-    const best = ranked[0];
-    const second = ranked[1];
+    if (!best) {
+      const m = (extrato.descricao || '').match(/\[banco (\d{3})\]/);
+      if (!m) { semMatch++; continue; }
+      const bancoNome = guessBankFromCode(m[1]) || m[1];
 
-    if (!best) { semMatch++; continue; }
-    if (best.dist > 7 || (second && second.dist < 20)) { ambiguos++; continue; }
+      // 1. boleto DDA: mesmo banco + valor, vencimento mais próximo do pagamento
+      const ddas = await adminDb('dda_documentos')
+        .where('banco', bancoNome)
+        .whereBetween('valor_documento', [valor - 0.005, valor + 0.005])
+        .whereNotIn('status', ['descartado', 'pago'])
+        .select('id', 'data_vencimento', 'cedente_nome', 'conta_pagar_id', 'status');
+
+      const ranked = ddas
+        .map((d) => ({ ...d, dist: Math.abs(diffDias(d.data_vencimento, extrato.data_transacao)) }))
+        .sort((a, b) => a.dist - b.dist);
+      best = ranked[0];
+      const second = ranked[1];
+
+      if (!best) { semMatch++; continue; }
+      if (best.dist > 7 || (second && second.dist < 20)) { ambiguos++; continue; }
+    }
 
     // 2. conta a pagar: a vinculada ao DDA, ou única em aberto com mesmo valor+venc
     let conta = null;
@@ -656,61 +672,72 @@ async function autoConciliarMp({ username = 'auto-mp' } = {}) {
       if (candidatas.length === 1) conta = candidatas[0];
     }
 
-    // 3. marca o DDA como pago
-    await adminDb('dda_documentos').where('id', best.id).update({
-      status: 'pago',
-      pago_em: toDateStr(extrato.data_transacao),
-      pago_ref: extrato.fit_id,
-      conta_pagar_id: conta ? conta.id : best.conta_pagar_id,
-      atualizado_por: username,
-    });
-    ddaPagos.push({
-      dda_id: best.id,
-      cedente: best.cedente_nome,
-      valor,
-      vencimento: toDateStr(best.data_vencimento),
-      pago_em: toDateStr(extrato.data_transacao),
-    });
-
-    // 4. baixa na conta a pagar, quando existe
-    let baixaId = null;
-    if (conta && Number(conta.saldo_aberto) >= valor - 0.01) {
-      const jaBaixado = await adminDb(BAIXAS)
-        .where('referencia_externa', extrato.fit_id)
-        .where('estornada', false)
-        .first();
-      if (jaBaixado) {
-        baixaId = jaBaixado.id;
-      } else {
-        [baixaId] = await adminDb(BAIXAS).insert({
-          conta_pagar_id: conta.id,
-          data_pagamento: extrato.data_transacao,
-          valor_pago: valor,
-          valor_desconto: 0,
-          valor_juros: 0,
-          valor_multa: 0,
-          forma_pagamento: 'mercadopago',
-          conta_bancaria_id: extrato.conta_bancaria_id,
-          banco_baixa: null,
-          origem: 'mercadopago',
-          referencia_externa: extrato.fit_id,
-          observacoes: `Baixa automática MercadoPago: ${extrato.descricao || ''} (DDA #${best.id} ${best.cedente_nome || ''})`,
-          criado_por: username,
-          atualizado_por: username,
-        });
-        await recalcContaDependencies(conta.id);
-      }
-      baixados.push({
-        extrato_id: extrato.id,
-        baixa_id: baixaId,
-        conta_pagar_id: conta.id,
-        fornecedor: conta.fornecedor,
+    // 3. marca o DDA como pago (na repescagem só completa o vínculo da conta)
+    if (!repescagem) {
+      await adminDb('dda_documentos').where('id', best.id).update({
+        status: 'pago',
+        pago_em: toDateStr(extrato.data_transacao),
+        pago_ref: extrato.fit_id,
+        conta_pagar_id: conta ? conta.id : best.conta_pagar_id,
+        atualizado_por: username,
+      });
+      ddaPagos.push({
+        dda_id: best.id,
+        cedente: best.cedente_nome,
         valor,
-        data_pagamento: toDateStr(extrato.data_transacao),
+        vencimento: toDateStr(best.data_vencimento),
+        pago_em: toDateStr(extrato.data_transacao),
+      });
+    } else if (conta && !best.conta_pagar_id) {
+      await adminDb('dda_documentos').where('id', best.id).update({
+        conta_pagar_id: conta.id,
+        atualizado_por: username,
       });
     }
 
-    // 5. extrato conciliado (com ou sem baixa — o boleto foi identificado)
+    // 4. sem conta em aberto, o extrato fica pendente para repescagem/manual
+    if (!conta || Number(conta.saldo_aberto) < valor - 0.01) {
+      aguardandoConta++;
+      continue;
+    }
+
+    // 5. baixa na conta a pagar
+    let baixaId = null;
+    const jaBaixado = await adminDb(BAIXAS)
+      .where('referencia_externa', extrato.fit_id)
+      .where('estornada', false)
+      .first();
+    if (jaBaixado) {
+      baixaId = jaBaixado.id;
+    } else {
+      [baixaId] = await adminDb(BAIXAS).insert({
+        conta_pagar_id: conta.id,
+        data_pagamento: extrato.data_transacao,
+        valor_pago: valor,
+        valor_desconto: 0,
+        valor_juros: 0,
+        valor_multa: 0,
+        forma_pagamento: 'mercadopago',
+        conta_bancaria_id: extrato.conta_bancaria_id,
+        banco_baixa: null,
+        origem: 'mercadopago',
+        referencia_externa: extrato.fit_id,
+        observacoes: `Baixa automática MercadoPago: ${extrato.descricao || ''} (DDA #${best.id} ${best.cedente_nome || ''})`,
+        criado_por: username,
+        atualizado_por: username,
+      });
+      await recalcContaDependencies(conta.id);
+    }
+    baixados.push({
+      extrato_id: extrato.id,
+      baixa_id: baixaId,
+      conta_pagar_id: conta.id,
+      fornecedor: conta.fornecedor,
+      valor,
+      data_pagamento: toDateStr(extrato.data_transacao),
+    });
+
+    // 6. extrato conciliado somente com baixa criada
     await adminDb(EXTRATOS).where('id', extrato.id).update({
       status: 'conciliado',
       baixa_id: baixaId,
@@ -723,6 +750,7 @@ async function autoConciliarMp({ username = 'auto-mp' } = {}) {
     dda_pagos: ddaPagos,
     ambiguos,
     sem_match: semMatch,
+    aguardando_conta: aguardandoConta,
   };
 }
 
